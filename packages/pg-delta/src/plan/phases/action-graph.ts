@@ -146,8 +146,8 @@ export function finalizeActions(input: FinalizeInput): FinalizeOutput {
     assumedSchemaNames,
     assumedPresentIds,
     evaluatorActions,
+    orderAfter,
   );
-  for (const [before, after] of orderAfter) edges.push([before, after]);
 
   // Order a table's ADD COLUMN creates by declared column position
   // (pg_attribute.attnum, carried as the non-semantic `_position` field) instead

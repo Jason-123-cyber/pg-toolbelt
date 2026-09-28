@@ -135,15 +135,23 @@ export function membershipId(role: string, member: string): StableId {
   return { kind: "membership", role, member };
 }
 
+/** Id of the schema containing `id`; undefined when the kind is not
+ *  schema-qualified. */
+export function containingSchemaId(id: StableId): StableId | undefined {
+  const schema = (id as { schema?: unknown }).schema;
+  return typeof schema === "string"
+    ? { kind: "schema", name: schema }
+    : undefined;
+}
+
 /** Id of `grantee`'s ACL on the schema containing `id`; undefined when the
  *  kind is not schema-qualified. */
 export function containingSchemaAclId(
   id: StableId,
   grantee: string,
 ): StableId | undefined {
-  const schema = (id as { schema?: unknown }).schema;
-  if (typeof schema !== "string") return undefined;
-  return { kind: "acl", target: { kind: "schema", name: schema }, grantee };
+  const target = containingSchemaId(id);
+  return target === undefined ? undefined : { kind: "acl", target, grantee };
 }
 
 export function roleFlagSql(payload: Fact["payload"]): string {

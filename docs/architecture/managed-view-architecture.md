@@ -150,8 +150,9 @@ cleanly:
   acldefault-normalized ACL (owner-relative), so the state would not converge.
   So an owner action the applier can't run directly is made runnable when
   possible: ordered after a planned `GRANT r TO <applier>`, or wrapped as
-  `GRANT r TO <applier>; ALTER … OWNER TO r; REVOKE r FROM <applier>` when a
-  CREATEROLE applier may grant `r` to itself (`canGrantOwnerToSelf`).
+  `GRANT r TO <applier>` → `ALTER … OWNER TO r` → `REVOKE r FROM <applier>`
+  when the applier may grant `r` to itself (`selfOwnerRoute`: a role it
+  creates, or one the probe lists in `adminOf`).
   Otherwise it is still planned but flagged with a `capability.owner` warning;
   `apply()` refuses a flagged plan before any statement runs, while a
   read-only diff still renders.

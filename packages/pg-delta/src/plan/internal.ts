@@ -119,8 +119,12 @@ export function buildActionGraph(
   // Collected here rather than in a second pass so it rides the edge walk this
   // function already performs.
   evaluatorActions?: Set<number>,
+  // explicit `[before, after]` edges from the emitter (see FinalizeInput);
+  // seeded first so the alter-after-dependency pass never closes a cycle
+  // through them
+  orderAfter: ReadonlyArray<readonly [number, number]> = [],
 ): Array<[number, number]> {
-  const edges: Array<[number, number]> = [];
+  const edges: Array<[number, number]> = orderAfter.map(([b, a]) => [b, a]);
 
   // Memoized "can applying this fact's expression execute a user routine?" —
   // reachability in the DESIRED state over `depends` edges PLUS the parent→child

@@ -1793,8 +1793,9 @@ Deferred from the same review (not blocking):
 The owner check moved from a `plan()` throw to a `capability.owner` warning that
 `apply()` refuses. Resolved in the same PR: the probe lists SET-able roles on
 PG16+ (an ADMIN-only grant no longer counts), an owner ALTER orders after a
-planned `GRANT r TO <applier>`, and a CREATEROLE applier that may grant `r` to
-itself gets `GRANT → ALTER … OWNER TO → REVOKE` in one action. Remaining:
+planned `GRANT r TO <applier>`, and an applier that may grant `r` to itself
+gets `GRANT → ALTER … OWNER TO → REVOKE` (three actions chained by explicit
+edges). Remaining:
 
 - **Missing CREATE on the schema is not predicted.** A non-superuser
   `ALTER … OWNER TO r` also needs `r` to hold CREATE on the object's schema.
@@ -1807,6 +1808,17 @@ itself gets `GRANT → ALTER … OWNER TO → REVOKE` in one action. Remaining:
 - **Roles the applier cannot grant stay flagged**, e.g. a Supabase role
   created by `supabase_admin` (no ADMIN for `postgres` on PG16+). Only a
   superuser or member applier can apply those.
+- **An applier's own `SET FALSE` self-grant (PG16+, PR #493 Codex).** If the
+  applier already granted `r` to itself `WITH SET FALSE`, the bare
+  `GRANT r TO <applier>` keeps SET off and the ALTER fails at apply (the
+  segment rolls back; the REVOKE never runs, so nothing is lost). Forcing
+  `WITH SET TRUE` would make it run but let the REVOKE delete that grant.
+  Needs the probe to report grantor-scoped self-grants; unusual setup.
+- **Multi-statement actions under batched apply (pre-existing).** Batched
+  apply maps a failure to an action by counting CommandComplete, one per
+  action. The extension-member ACL restore (`rules/metadata.ts`) emits several
+  statements in one action, so a failure inside it can be attributed to a
+  later action. The owner wrapper avoids this by being three actions.
 - **`renderApplyScript()` does not verify `planId`.** It refuses a plan carrying
   a `capability.owner` diagnostic, but a library caller that strips the
   diagnostic from a stamped plan and then renders gets the owner ALTERs

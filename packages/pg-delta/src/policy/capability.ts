@@ -29,9 +29,13 @@ export interface ApplierCapability {
    *  (not a Set) so the capability persists losslessly in the Plan artifact's
    *  JSON (follow-up 2 productization). */
   memberOf: readonly string[];
-  /** roles the applier holds ADMIN OPTION on, so it can grant them to itself.
-   *  Omitted on legacy artifacts / hand-built fixtures. */
+  /** roles the applier may grant, to itself included: ADMIN OPTION, plus
+   *  before PG16 every non-superuser role when it has CREATEROLE. Omitted on
+   *  legacy artifacts / hand-built fixtures. */
   adminOf?: readonly string[];
+  /** PG16+ `createrole_self_grant`: options a CREATEROLE applier grants
+   *  itself on each role it creates. Omitted before PG16. */
+  createroleSelfGrant?: string;
   /** CREATEROLE on the applying role. Omitted on legacy artifacts / hand-built
    *  fixtures — membership projection stays off. */
   createRole?: boolean;
@@ -63,9 +67,14 @@ export async function probeApplierCapability(
            ) AS member_of,
            ARRAY(
              SELECT r.rolname::text FROM pg_catalog.pg_roles r
-             WHERE pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER WITH ADMIN OPTION')
-               AND r.rolname NOT LIKE 'pg\\_%'
-           ) AS admin_of
+             WHERE r.rolname NOT LIKE 'pg\\_%'
+               AND (pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER WITH ADMIN OPTION')
+                    OR (current_setting('server_version_num')::int < 160000
+                        AND (SELECT rolcreaterole FROM pg_catalog.pg_roles WHERE rolname = current_user)
+                        AND NOT r.rolsuper))
+           ) AS admin_of,
+           CASE WHEN current_setting('server_version_num')::int >= 160000
+                THEN current_setting('createrole_self_grant') END AS createrole_self_grant
   `);
   const row = res.rows[0] as {
     role: string;
@@ -74,6 +83,7 @@ export async function probeApplierCapability(
     pg_major: number;
     member_of: string[] | null;
     admin_of: string[] | null;
+    createrole_self_grant: string | null;
   };
   return {
     role: String(row.role),
@@ -82,6 +92,9 @@ export async function probeApplierCapability(
     adminOf: row.admin_of ?? [],
     createRole: Boolean(row.create_role),
     pgMajor: Number(row.pg_major),
+    ...(row.createrole_self_grant !== null
+      ? { createroleSelfGrant: String(row.createrole_self_grant) }
+      : {}),
   };
 }
 
@@ -133,19 +146,29 @@ export function canSetOwner(cap: ApplierCapability, roleName: string): boolean {
 }
 
 /**
- * Whether a non-superuser applier that cannot set `roleName` directly can
- * still grant it to itself around the owner ALTER (GRANT → ALTER → REVOKE).
- * PG16+ needs ADMIN OPTION on the role — a CREATEROLE applier holds it on a
- * role it creates in the same plan. Before PG16, CREATEROLE may grant any
- * non-superuser role. Unknown `createRole` / `pgMajor` (legacy JSON) → false.
+ * How a non-superuser applier that cannot set `roleName` directly can still
+ * run `ALTER … OWNER TO roleName`:
+ *  - "direct": a role it creates in this plan already self-grants SET
+ *    (`createrole_self_grant` includes `set`);
+ *  - "wrap": it may grant the role to itself, so GRANT → ALTER → REVOKE —
+ *    a role it creates with no self-grant (PG16+ leaves it ADMIN; before PG16
+ *    CREATEROLE grants any non-superuser role), or one in `adminOf`;
+ *  - "flag": neither. Also when a created role self-grants without `set`: the
+ *    REVOKE would remove that grant.
+ * Unknown probe fields (legacy JSON) fall to "flag".
  */
-export function canGrantOwnerToSelf(
+export function selfOwnerRoute(
   cap: ApplierCapability,
   roleName: string,
-  role: { createdByPlan: boolean; superuser: boolean },
-): boolean {
-  if (cap.createRole !== true || cap.pgMajor === undefined) return false;
-  if (role.superuser) return false;
-  if (cap.pgMajor < 16) return true;
-  return role.createdByPlan || (cap.adminOf ?? []).includes(roleName);
+  createdByPlan: boolean,
+): "direct" | "wrap" | "flag" {
+  if (createdByPlan && cap.createRole === true) {
+    const selfGrant = (cap.createroleSelfGrant ?? "")
+      .split(",")
+      .map((option) => option.trim().toLowerCase())
+      .filter((option) => option.length > 0);
+    if (selfGrant.includes("set")) return "direct";
+    return selfGrant.length === 0 ? "wrap" : "flag";
+  }
+  return (cap.adminOf ?? []).includes(roleName) ? "wrap" : "flag";
 }

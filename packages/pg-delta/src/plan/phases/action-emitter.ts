@@ -14,8 +14,8 @@ import type { Fact, FactBase } from "../../core/fact.ts";
 import { encodeId, type StableId } from "../../core/stable-id.ts";
 import {
   CAPABILITY_OWNER,
-  canGrantOwnerToSelf,
   canSetOwner,
+  selfOwnerRoute,
   type ApplierCapability,
 } from "../../policy/capability.ts";
 import {
@@ -38,6 +38,7 @@ import {
 } from "../rules.ts";
 import {
   containingSchemaAclId,
+  containingSchemaId,
   defaultPrivilegeCreateActions,
   membershipId,
   renderRevokeAllSql,
@@ -657,74 +658,80 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
     const ownerEmitted = new Set<string>();
     // Owner residue (move 6): as a non-superuser, `ALTER … OWNER TO R` needs
     // SET ROLE on R, and R needs CREATE on the object's schema. The ALTER orders
-    // after a planned grant supplying either. An applier that cannot set R but
-    // may grant R to itself gets a transient GRANT/REVOKE around the ALTER, in
-    // one action so the three never reorder (the end state is unchanged).
-    // Otherwise the ALTER is still emitted and flagged: leaving the object
-    // applier-owned would not converge (the ACL is acldefault-relative), and
-    // apply() refuses the flagged plan while a read-only diff still renders.
-    const ownerAlterSpec = (
+    // after a planned grant supplying either, and after its schema's own ALTER
+    // to R. An applier that cannot set R but may grant R to itself gets
+    // GRANT → ALTER → REVOKE, chained by explicit edges (the end state is
+    // unchanged). Otherwise the ALTER is still emitted and flagged: leaving the
+    // object applier-owned would not converge (the ACL is acldefault-relative),
+    // and apply() refuses the flagged plan while a read-only diff still renders.
+    const restricted = capability !== undefined && !capability.isSuperuser;
+    const ownerAlters: Array<{
+      objId: StableId;
+      roleName: string;
+      index: number;
+    }> = [];
+    const emitOwnerAlter = (
       objId: StableId,
       roleId: StableId,
       roleName: string,
       alterSql: string,
-    ): ActionSpec => {
-      const consumes: StableId[] = [roleId];
-      if (capability === undefined || canSetOwner(capability, roleName)) {
-        return { sql: alterSql, consumes };
-      }
-      const selfGrant = membershipId(roleName, capability.role);
-      if (producerOf.has(encodeId(selfGrant))) {
-        return { sql: alterSql, consumes: [...consumes, selfGrant] };
-      }
-      const selfGrantable = canGrantOwnerToSelf(capability, roleName, {
-        createdByPlan: producerOf.has(encodeId(roleId)),
-        superuser: desired.get(roleId)?.payload["superuser"] === true,
-      });
-      if (selfGrantable) {
-        const role = qid(roleName);
-        const applier = qid(capability.role);
-        return {
-          sql: [
-            `GRANT ${role} TO ${applier}`,
-            alterSql,
-            `REVOKE ${role} FROM ${applier}`,
-          ].join(";\n"),
-          consumes,
-        };
-      }
-      diagnostics.push(
-        ownerCapabilityDiagnostic(objId, roleName, capability.role),
-      );
-      return { sql: alterSql, consumes };
-    };
-    // A schema ACL is created as REVOKE-then-GRANT and only the REVOKE produces
-    // its id, so order after every create action touching it. Indexed once:
-    // owner ALTERs are the last actions emitted and add no creates.
-    let createsById: Map<string, number[]> | undefined;
-    const afterSchemaCreateGrant = (
-      objId: StableId,
-      roleName: string,
-      alterIndex: number,
+      releases?: StableId[],
     ): void => {
-      if (capability === undefined || capability.isSuperuser) return;
-      const aclId = containingSchemaAclId(objId, roleName);
-      if (aclId === undefined) return;
-      if (createsById === undefined) {
-        createsById = new Map();
-        actions.forEach((action, index) => {
-          if (action.verb !== "create") return;
-          for (const id of [...action.produces, ...action.consumes]) {
-            const key = encodeId(id);
-            const list = createsById?.get(key) ?? [];
-            if (list.at(-1) !== index) list.push(index);
-            createsById?.set(key, list);
-          }
-        });
+      const consumes: StableId[] = [roleId];
+      let route: "direct" | "wrap" | "flag" = "direct";
+      if (capability !== undefined && !canSetOwner(capability, roleName)) {
+        const selfGrant = membershipId(roleName, capability.role);
+        if (producerOf.has(encodeId(selfGrant))) consumes.push(selfGrant);
+        else {
+          route = selfOwnerRoute(
+            capability,
+            roleName,
+            producerOf.has(encodeId(roleId)),
+          );
+        }
       }
-      for (const index of createsById.get(encodeId(aclId)) ?? []) {
-        orderAfter.push([index, alterIndex]);
+      if (route === "flag" && capability !== undefined) {
+        diagnostics.push(
+          ownerCapabilityDiagnostic(objId, roleName, capability.role),
+        );
       }
+      const role = qid(roleName);
+      const applier = capability !== undefined ? qid(capability.role) : "";
+      const grantIndex =
+        route === "wrap"
+          ? pushAction(
+              "alter",
+              {
+                sql: `GRANT ${role} TO ${applier}`,
+                consumes: [roleId],
+                lockClass: "none",
+              },
+              { consumes: [objId] },
+            )
+          : undefined;
+      const index = pushAction(
+        "alter",
+        {
+          sql: alterSql,
+          consumes,
+          ...(releases !== undefined ? { releases } : {}),
+        },
+        { consumes: [objId] },
+      );
+      if (grantIndex !== undefined) {
+        orderAfter.push([grantIndex, index]);
+        const revokeIndex = pushAction(
+          "alter",
+          {
+            sql: `REVOKE ${role} FROM ${applier}`,
+            consumes: [roleId],
+            lockClass: "none",
+          },
+          { consumes: [objId] },
+        );
+        orderAfter.push([index, revokeIndex]);
+      }
+      if (restricted) ownerAlters.push({ objId, roleName, index });
     };
     for (const delta of deltas) {
       if (delta.verb !== "link" || delta.edge.kind !== "owner") continue;
@@ -753,20 +760,13 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
       // (review P1 #1), so the release edge orders this before the old role drop.
       const oldRoleId =
         oldOwnerByFact.get(objKey) ?? renamedOwnerId.get(objKey);
-      const alterIndex = pushAction(
-        "alter",
-        {
-          ...ownerAlterSpec(
-            objId,
-            newRoleId,
-            roleName,
-            `${prefix} OWNER TO ${qid(roleName)}`,
-          ),
-          ...(oldRoleId !== undefined ? { releases: [oldRoleId] } : {}),
-        },
-        { consumes: [objId] },
+      emitOwnerAlter(
+        objId,
+        newRoleId,
+        roleName,
+        `${prefix} OWNER TO ${qid(roleName)}`,
+        oldRoleId !== undefined ? [oldRoleId] : undefined,
       );
-      afterSchemaCreateGrant(objId, roleName, alterIndex);
       ownerEmitted.add(objKey);
     }
 
@@ -789,17 +789,44 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         .find((e) => e.kind === "owner");
       if (ownerEdge?.to.kind !== "role") continue;
       const roleName = (ownerEdge.to as { kind: "role"; name: string }).name;
-      const alterIndex = pushAction(
-        "alter",
-        ownerAlterSpec(
-          fact.id,
-          ownerEdge.to,
-          roleName,
-          `${ownerAlterPrefix(fact)} OWNER TO ${qid(roleName)}`,
-        ),
-        { consumes: [fact.id] },
+      emitOwnerAlter(
+        fact.id,
+        ownerEdge.to,
+        roleName,
+        `${ownerAlterPrefix(fact)} OWNER TO ${qid(roleName)}`,
       );
-      afterSchemaCreateGrant(fact.id, roleName, alterIndex);
+    }
+
+    // Schema-qualified owner ALTERs, restricted applier only: run after every
+    // create action touching R's ACL on the schema (a REVOKE-then-GRANT pair
+    // whose id only the REVOKE produces) and after the schema's own ALTER to R.
+    if (ownerAlters.length > 0) {
+      const createsById = new Map<string, number[]>();
+      actions.forEach((action, index) => {
+        if (action.verb !== "create") return;
+        for (const id of [...action.produces, ...action.consumes]) {
+          const key = encodeId(id);
+          const list = createsById.get(key) ?? [];
+          if (list.at(-1) !== index) list.push(index);
+          createsById.set(key, list);
+        }
+      });
+      const ownerAlterOf = new Map<string, { roleName: string; index: number }>(
+        ownerAlters.map((o) => [encodeId(o.objId), o]),
+      );
+      for (const { objId, roleName, index } of ownerAlters) {
+        const aclId = containingSchemaAclId(objId, roleName);
+        if (aclId === undefined) continue;
+        for (const before of createsById.get(encodeId(aclId)) ?? []) {
+          orderAfter.push([before, index]);
+        }
+        const schemaAlter = ownerAlterOf.get(
+          encodeId(containingSchemaId(objId) as StableId),
+        );
+        if (schemaAlter?.roleName === roleName) {
+          orderAfter.push([schemaAlter.index, index]);
+        }
+      }
     }
   }
 
