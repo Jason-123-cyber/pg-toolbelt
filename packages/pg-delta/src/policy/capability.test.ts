@@ -12,6 +12,7 @@ import { buildFactBase, type Fact } from "../core/fact.ts";
 import { encodeId, type StableId } from "../core/stable-id.ts";
 import type { Pool } from "pg";
 import { apply } from "../apply/apply.ts";
+import { provePlan } from "../proof/prove.ts";
 import { resolveView } from "./policy.ts";
 import { plan } from "../plan/plan.ts";
 import {
@@ -206,6 +207,20 @@ describe("ApplierCapability — owner residue (follow-up 1)", () => {
     const err = await apply(thePlan, untouchablePool).catch((e: unknown) => e);
     expect(String(err)).toMatch(
       /apply: cannot set owner of schema:app to role "r2"/,
+    );
+  });
+
+  test("prove refuses a flagged plan before any clone work", async () => {
+    const thePlan = plan(source(r2), desiredOwnedBy(r2), {
+      capability: memberOfR1,
+    });
+    const err = await provePlan(thePlan, untouchablePool, desiredOwnedBy(r2), {
+      reextract: () => {
+        throw new Error("prove re-extracted the clone");
+      },
+    }).catch((e: unknown) => e);
+    expect(String(err)).toMatch(
+      /prove: cannot set owner of schema:app to role "r2"/,
     );
   });
 
