@@ -744,6 +744,7 @@ export function plan(
     foldHints,
     acceptsFolds,
     renameActionIndices,
+    orderAfter,
     diagnostics: emitDiags,
   } = emitActions({
     source,
@@ -780,6 +781,7 @@ export function plan(
     source,
     desired,
     renameActionIndices,
+    orderAfter,
     foldHints,
     acceptsFolds,
     assumedRoleNames,

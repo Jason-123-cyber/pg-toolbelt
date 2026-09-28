@@ -148,9 +148,13 @@ cleanly:
 - **Ownership** (`ALTER … OWNER TO R` needs superuser or membership in R) **can
   NOT** be silently skipped: leaving an object applier-owned ripples into its
   acldefault-normalized ACL (owner-relative), so the state would not converge.
-  So an owner action the applier can't run is still planned but flagged with a
-  `capability.owner` warning (`canSetOwner`); `apply()` refuses a flagged plan
-  before any statement runs, while a read-only diff still renders.
+  So an owner action the applier can't run directly is made runnable when
+  possible: ordered after a planned `GRANT r TO <applier>`, or wrapped as
+  `GRANT r TO <applier>; ALTER … OWNER TO r; REVOKE r FROM <applier>` when a
+  CREATEROLE applier may grant `r` to itself (`canGrantOwnerToSelf`).
+  Otherwise it is still planned but flagged with a `capability.owner` warning;
+  `apply()` refuses a flagged plan before any statement runs, while a
+  read-only diff still renders.
 
 For a pure file-to-file diff with no applier connection, capability defaults to
 "unrestricted" — the corpus/CI path is a no-op.

@@ -1788,22 +1788,25 @@ Deferred from the same review (not blocking):
   we start modeling grant options on the tuples.
 
 
-## `capability.owner` — owner check precision (SUPABASE-API-8RT)
+## `capability.owner` — unsettable owners (SUPABASE-API-8RT)
 
 The owner check moved from a `plan()` throw to a `capability.owner` warning that
-`apply()` refuses. `canSetOwner` itself was left as is; two known imprecisions
-remain:
+`apply()` refuses. Resolved in the same PR: the probe lists SET-able roles on
+PG16+ (an ADMIN-only grant no longer counts), an owner ALTER orders after a
+planned `GRANT r TO <applier>`, and a CREATEROLE applier that may grant `r` to
+itself gets `GRANT → ALTER … OWNER TO → REVOKE` in one action. Remaining:
 
-- **Plan-created memberships are ignored.** The check reads the applier's
-  memberships probed on the SOURCE. When the desired state creates the owner
-  role and grants it to the applier (`GRANT r TO postgres`), the planned grant
-  would make the `ALTER … OWNER TO r` runnable, but the check still flags it.
-  Fixing it also needs the owner ALTER ordered after that membership action.
-- **PG16+ needs SET, not just MEMBER.** `probeApplierCapability` lists roles via
-  `pg_has_role(…, 'MEMBER')`, but PG16+ `ALTER … OWNER` requires the SET option
-  (`must be able to SET ROLE`). A CREATEROLE creator's implicit ADMIN-only grant
-  counts as MEMBER, so the check passes and the ALTER fails at apply
-  (reproduced on `postgres:17-alpine`).
+- **Missing CREATE on the schema is not predicted.** A non-superuser
+  `ALTER … OWNER TO r` also needs `r` to hold CREATE on the object's schema.
+  The owner ALTER now orders after a planned schema grant to `r`, but when
+  the desired state has none, the plan carries no warning and apply fails
+  with `permission denied for schema`. Predicting it needs CREATE resolved
+  through PUBLIC and inherited memberships.
+- **One GRANT/REVOKE pair per object.** Several objects owned by the same
+  role each get their own transient grant. Correct, just verbose.
+- **Roles the applier cannot grant stay flagged**, e.g. a Supabase role
+  created by `supabase_admin` (no ADMIN for `postgres` on PG16+). Only a
+  superuser or member applier can apply those.
 - **`renderApplyScript()` does not verify `planId`.** It refuses a plan carrying
   a `capability.owner` diagnostic, but a library caller that strips the
   diagnostic from a stamped plan and then renders gets the owner ALTERs

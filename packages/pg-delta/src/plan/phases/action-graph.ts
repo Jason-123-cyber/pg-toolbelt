@@ -41,6 +41,9 @@ export interface FinalizeInput {
   source: FactBase;
   desired: FactBase;
   renameActionIndices: ReadonlySet<number>;
+  /** extra `[before, after]` action-index edges the emitter knows but ids
+   *  cannot express (e.g. after every action of a multi-statement create). */
+  orderAfter: ReadonlyArray<readonly [number, number]>;
   /** per-action compaction metadata captured during emission (never persisted). */
   foldHints: ReadonlyArray<FoldHint | undefined>;
   acceptsFolds: readonly boolean[];
@@ -101,6 +104,7 @@ export function finalizeActions(input: FinalizeInput): FinalizeOutput {
     source,
     desired,
     renameActionIndices,
+    orderAfter,
     foldHints,
     acceptsFolds,
     assumedRoleNames,
@@ -143,6 +147,7 @@ export function finalizeActions(input: FinalizeInput): FinalizeOutput {
     assumedPresentIds,
     evaluatorActions,
   );
+  for (const [before, after] of orderAfter) edges.push([before, after]);
 
   // Order a table's ADD COLUMN creates by declared column position
   // (pg_attribute.attnum, carried as the non-semantic `_position` field) instead

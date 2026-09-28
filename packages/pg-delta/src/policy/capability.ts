@@ -24,10 +24,14 @@ export interface ApplierCapability {
   role: string;
   /** superuser bypasses most permission checks (incl. FDW GRANT/REVOKE) */
   isSuperuser: boolean;
-  /** roles the applier is a member of (can SET ROLE / own objects as). A plain
-   *  array (not a Set) so the capability persists losslessly in the Plan
-   *  artifact's JSON (follow-up 2 productization). */
+  /** roles the applier can own objects as: SET ROLE-able on PG16+ (an
+   *  ADMIN-only grant does not count), plain membership before. A plain array
+   *  (not a Set) so the capability persists losslessly in the Plan artifact's
+   *  JSON (follow-up 2 productization). */
   memberOf: readonly string[];
+  /** roles the applier holds ADMIN OPTION on, so it can grant them to itself.
+   *  Omitted on legacy artifacts / hand-built fixtures. */
+  adminOf?: readonly string[];
   /** CREATEROLE on the applying role. Omitted on legacy artifacts / hand-built
    *  fixtures — membership projection stays off. */
   createRole?: boolean;
@@ -52,9 +56,16 @@ export async function probeApplierCapability(
            (current_setting('server_version_num')::int / 10000) AS pg_major,
            ARRAY(
              SELECT r.rolname::text FROM pg_catalog.pg_roles r
-             WHERE pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER')
+             WHERE pg_catalog.pg_has_role(current_user, r.oid,
+                     CASE WHEN current_setting('server_version_num')::int >= 160000
+                          THEN 'SET' ELSE 'MEMBER' END)
                AND r.rolname NOT LIKE 'pg\\_%'
-           ) AS member_of
+           ) AS member_of,
+           ARRAY(
+             SELECT r.rolname::text FROM pg_catalog.pg_roles r
+             WHERE pg_catalog.pg_has_role(current_user, r.oid, 'MEMBER WITH ADMIN OPTION')
+               AND r.rolname NOT LIKE 'pg\\_%'
+           ) AS admin_of
   `);
   const row = res.rows[0] as {
     role: string;
@@ -62,11 +73,13 @@ export async function probeApplierCapability(
     create_role: boolean;
     pg_major: number;
     member_of: string[] | null;
+    admin_of: string[] | null;
   };
   return {
     role: String(row.role),
     isSuperuser: Boolean(row.is_superuser),
     memberOf: row.member_of ?? [],
+    adminOf: row.admin_of ?? [],
     createRole: Boolean(row.create_role),
     pgMajor: Number(row.pg_major),
   };
@@ -103,9 +116,10 @@ export function capabilityExcludedRoots(
 }
 
 /**
- * Whether the applier can run `ALTER <obj> OWNER TO roleName` — PostgreSQL
- * requires the applier to be a superuser or a member of the target role (the
- * owner residue, move 6 / follow-up 1).
+ * Whether the applier can run `ALTER <obj> OWNER TO roleName` directly —
+ * PostgreSQL requires the applier to be a superuser or able to SET ROLE to the
+ * target role (plain membership before PG16; the owner residue, move 6 /
+ * follow-up 1).
  *
  * Unlike an FDW ACL (a leaf fact that projects out cleanly), an owner cannot be
  * silently skipped: leaving an object applier-owned ripples into its
@@ -116,4 +130,22 @@ export function capabilityExcludedRoots(
  */
 export function canSetOwner(cap: ApplierCapability, roleName: string): boolean {
   return cap.isSuperuser || cap.memberOf.includes(roleName);
+}
+
+/**
+ * Whether a non-superuser applier that cannot set `roleName` directly can
+ * still grant it to itself around the owner ALTER (GRANT → ALTER → REVOKE).
+ * PG16+ needs ADMIN OPTION on the role — a CREATEROLE applier holds it on a
+ * role it creates in the same plan. Before PG16, CREATEROLE may grant any
+ * non-superuser role. Unknown `createRole` / `pgMajor` (legacy JSON) → false.
+ */
+export function canGrantOwnerToSelf(
+  cap: ApplierCapability,
+  roleName: string,
+  role: { createdByPlan: boolean; superuser: boolean },
+): boolean {
+  if (cap.createRole !== true || cap.pgMajor === undefined) return false;
+  if (role.superuser) return false;
+  if (cap.pgMajor < 16) return true;
+  return role.createdByPlan || (cap.adminOf ?? []).includes(roleName);
 }

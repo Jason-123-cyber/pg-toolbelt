@@ -14,6 +14,7 @@ import type { Fact, FactBase } from "../../core/fact.ts";
 import { encodeId, type StableId } from "../../core/stable-id.ts";
 import {
   CAPABILITY_OWNER,
+  canGrantOwnerToSelf,
   canSetOwner,
   type ApplierCapability,
 } from "../../policy/capability.ts";
@@ -36,7 +37,9 @@ import {
   type RulesForId,
 } from "../rules.ts";
 import {
+  containingSchemaAclId,
   defaultPrivilegeCreateActions,
+  membershipId,
   renderRevokeAllSql,
 } from "../rules/helpers.ts";
 import type { AcceptedRename } from "./change-set.ts";
@@ -87,6 +90,8 @@ export interface ActionEmitterOutput {
   foldHints: Array<FoldHint | undefined>;
   acceptsFolds: boolean[];
   renameActionIndices: Set<number>;
+  /** `[before, after]` index edges ids cannot express (see FinalizeInput) */
+  orderAfter: Array<[number, number]>;
   /** `capability.owner` warnings: owner ALTERs the applier cannot run */
   diagnostics: Diagnostic[];
 }
@@ -252,6 +257,7 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
   // RENAME), so owner edges on the renamed subtree must not drive graph ordering
   // through the rename (review P1 #2: rename/rename cycle).
   const renameActionIndices = new Set<number>();
+  const orderAfter: Array<[number, number]> = [];
   const diagnostics: Diagnostic[] = [];
   for (const { from, to, sourceSubtree, desiredSubtree } of acceptedRenames) {
     const rename = rulesForId(from.id).rename;
@@ -649,6 +655,77 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
     // objKeys whose owner a link delta already (re-)established below, so the
     // replaced-fact pass does not emit a second ALTER … OWNER TO for them.
     const ownerEmitted = new Set<string>();
+    // Owner residue (move 6): as a non-superuser, `ALTER … OWNER TO R` needs
+    // SET ROLE on R, and R needs CREATE on the object's schema. The ALTER orders
+    // after a planned grant supplying either. An applier that cannot set R but
+    // may grant R to itself gets a transient GRANT/REVOKE around the ALTER, in
+    // one action so the three never reorder (the end state is unchanged).
+    // Otherwise the ALTER is still emitted and flagged: leaving the object
+    // applier-owned would not converge (the ACL is acldefault-relative), and
+    // apply() refuses the flagged plan while a read-only diff still renders.
+    const ownerAlterSpec = (
+      objId: StableId,
+      roleId: StableId,
+      roleName: string,
+      alterSql: string,
+    ): ActionSpec => {
+      const consumes: StableId[] = [roleId];
+      if (capability === undefined || canSetOwner(capability, roleName)) {
+        return { sql: alterSql, consumes };
+      }
+      const selfGrant = membershipId(roleName, capability.role);
+      if (producerOf.has(encodeId(selfGrant))) {
+        return { sql: alterSql, consumes: [...consumes, selfGrant] };
+      }
+      const selfGrantable = canGrantOwnerToSelf(capability, roleName, {
+        createdByPlan: producerOf.has(encodeId(roleId)),
+        superuser: desired.get(roleId)?.payload["superuser"] === true,
+      });
+      if (selfGrantable) {
+        const role = qid(roleName);
+        const applier = qid(capability.role);
+        return {
+          sql: [
+            `GRANT ${role} TO ${applier}`,
+            alterSql,
+            `REVOKE ${role} FROM ${applier}`,
+          ].join(";\n"),
+          consumes,
+        };
+      }
+      diagnostics.push(
+        ownerCapabilityDiagnostic(objId, roleName, capability.role),
+      );
+      return { sql: alterSql, consumes };
+    };
+    // A schema ACL is created as REVOKE-then-GRANT and only the REVOKE produces
+    // its id, so order after every create action touching it. Indexed once:
+    // owner ALTERs are the last actions emitted and add no creates.
+    let createsById: Map<string, number[]> | undefined;
+    const afterSchemaCreateGrant = (
+      objId: StableId,
+      roleName: string,
+      alterIndex: number,
+    ): void => {
+      if (capability === undefined || capability.isSuperuser) return;
+      const aclId = containingSchemaAclId(objId, roleName);
+      if (aclId === undefined) return;
+      if (createsById === undefined) {
+        createsById = new Map();
+        actions.forEach((action, index) => {
+          if (action.verb !== "create") return;
+          for (const id of [...action.produces, ...action.consumes]) {
+            const key = encodeId(id);
+            const list = createsById?.get(key) ?? [];
+            if (list.at(-1) !== index) list.push(index);
+            createsById?.set(key, list);
+          }
+        });
+      }
+      for (const index of createsById.get(encodeId(aclId)) ?? []) {
+        orderAfter.push([index, alterIndex]);
+      }
+    };
     for (const delta of deltas) {
       if (delta.verb !== "link" || delta.edge.kind !== "owner") continue;
       const objId = delta.edge.from;
@@ -670,31 +747,26 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
       // ownership carried unchanged by an accepted OBJECT rename (the object id
       // changed; renamedOwner maps it through any role rename) — no action
       if (renamedOwner.get(objKey) === roleName) continue;
-      // Owner residue (move 6): `ALTER … OWNER TO R` requires the applier to be
-      // a superuser or a member of R. Leaving the object applier-owned would not
-      // converge (the ACL is acldefault-relative), so the ALTER is still emitted
-      // and flagged; apply() refuses a flagged plan before any statement runs,
-      // while a read-only diff still renders.
-      if (capability !== undefined && !canSetOwner(capability, roleName)) {
-        diagnostics.push(
-          ownerCapabilityDiagnostic(objId, roleName, capability.role),
-        );
-      }
       // for an accepted rename the source-side owner unlink is keyed by the OLD
       // id, so `oldOwnerByFact` (keyed by the link's `from`, i.e. the NEW id) has
       // no entry — fall back to the owner the renamed subtree carried in source
       // (review P1 #1), so the release edge orders this before the old role drop.
       const oldRoleId =
         oldOwnerByFact.get(objKey) ?? renamedOwnerId.get(objKey);
-      pushAction(
+      const alterIndex = pushAction(
         "alter",
         {
-          sql: `${prefix} OWNER TO ${qid(roleName)}`,
-          consumes: [newRoleId],
+          ...ownerAlterSpec(
+            objId,
+            newRoleId,
+            roleName,
+            `${prefix} OWNER TO ${qid(roleName)}`,
+          ),
           ...(oldRoleId !== undefined ? { releases: [oldRoleId] } : {}),
         },
         { consumes: [objId] },
       );
+      afterSchemaCreateGrant(objId, roleName, alterIndex);
       ownerEmitted.add(objKey);
     }
 
@@ -717,19 +789,17 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         .find((e) => e.kind === "owner");
       if (ownerEdge?.to.kind !== "role") continue;
       const roleName = (ownerEdge.to as { kind: "role"; name: string }).name;
-      if (capability !== undefined && !canSetOwner(capability, roleName)) {
-        diagnostics.push(
-          ownerCapabilityDiagnostic(fact.id, roleName, capability.role),
-        );
-      }
-      pushAction(
+      const alterIndex = pushAction(
         "alter",
-        {
-          sql: `${ownerAlterPrefix(fact)} OWNER TO ${qid(roleName)}`,
-          consumes: [ownerEdge.to],
-        },
+        ownerAlterSpec(
+          fact.id,
+          ownerEdge.to,
+          roleName,
+          `${ownerAlterPrefix(fact)} OWNER TO ${qid(roleName)}`,
+        ),
         { consumes: [fact.id] },
       );
+      afterSchemaCreateGrant(fact.id, roleName, alterIndex);
     }
   }
 
@@ -740,6 +810,7 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
     foldHints,
     acceptsFolds,
     renameActionIndices,
+    orderAfter,
     diagnostics,
   };
 }

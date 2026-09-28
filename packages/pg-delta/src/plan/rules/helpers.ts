@@ -130,6 +130,22 @@ export const ROLE_FLAGS: Record<string, [on: string, off: string]> = {
   bypassRls: ["BYPASSRLS", "NOBYPASSRLS"],
 };
 
+/** Id of the membership `role` → `member` (`GRANT role TO member`). */
+export function membershipId(role: string, member: string): StableId {
+  return { kind: "membership", role, member };
+}
+
+/** Id of `grantee`'s ACL on the schema containing `id`; undefined when the
+ *  kind is not schema-qualified. */
+export function containingSchemaAclId(
+  id: StableId,
+  grantee: string,
+): StableId | undefined {
+  const schema = (id as { schema?: unknown }).schema;
+  if (typeof schema !== "string") return undefined;
+  return { kind: "acl", target: { kind: "schema", name: schema }, grantee };
+}
+
 export function roleFlagSql(payload: Fact["payload"]): string {
   return Object.entries(ROLE_FLAGS)
     .map(([key, [on, off]]) => (payload[key] ? on : off))
