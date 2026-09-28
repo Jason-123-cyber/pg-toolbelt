@@ -4,6 +4,7 @@ import type { StableId } from "../core/stable-id.ts";
 import {
   aclJsonMemberAware,
   type CatalogFamily,
+  deparsedDef,
   memberExtensionExpr,
   notExtensionMember,
   parseAcl,
@@ -110,7 +111,7 @@ export const domainsFamily: CatalogFamily = {
           },
           parent: domain,
           payload: {
-            def: String(row["def"]),
+            def: deparsedDef(row, "domain constraint"),
             type: String(row["type"]),
             validated: Boolean(row["validated"]),
           },
