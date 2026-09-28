@@ -659,12 +659,16 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
     // Owner residue (move 6): as a non-superuser, `ALTER … OWNER TO R` needs
     // SET ROLE on R, and R needs CREATE on the object's schema. The ALTER orders
     // after a planned grant supplying either, and after its schema's own ALTER
-    // to R. An applier that cannot set R but may grant R to itself gets
-    // GRANT → ALTER → REVOKE, chained by explicit edges (the end state is
-    // unchanged). Otherwise the ALTER is still emitted and flagged: leaving the
+    // to R. An applier that cannot set R but may grant R to itself gets one
+    // GRANT before and one REVOKE after all of R's owner ALTERs, chained by
+    // explicit edges (the end state is unchanged). Otherwise the ALTER is still emitted and flagged: leaving the
     // object applier-owned would not converge (the ACL is acldefault-relative),
     // and apply() refuses the flagged plan while a read-only diff still renders.
     const restricted = capability !== undefined && !capability.isSuperuser;
+    // one GRANT/REVOKE per wrapped role: the applier's grants share one
+    // pg_auth_members row, so a per-object REVOKE could drop it before
+    // another object's ALTER runs
+    const wrapOf = new Map<string, { roleId: StableId; alters: number[] }>();
     const ownerAlters: Array<{
       objId: StableId;
       roleName: string;
@@ -695,20 +699,6 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
           ownerCapabilityDiagnostic(objId, roleName, capability.role),
         );
       }
-      const role = qid(roleName);
-      const applier = capability !== undefined ? qid(capability.role) : "";
-      const grantIndex =
-        route === "wrap"
-          ? pushAction(
-              "alter",
-              {
-                sql: `GRANT ${role} TO ${applier}`,
-                consumes: [roleId],
-                lockClass: "none",
-              },
-              { consumes: [objId] },
-            )
-          : undefined;
       const index = pushAction(
         "alter",
         {
@@ -718,18 +708,10 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         },
         { consumes: [objId] },
       );
-      if (grantIndex !== undefined) {
-        orderAfter.push([grantIndex, index]);
-        const revokeIndex = pushAction(
-          "alter",
-          {
-            sql: `REVOKE ${role} FROM ${applier}`,
-            consumes: [roleId],
-            lockClass: "none",
-          },
-          { consumes: [objId] },
-        );
-        orderAfter.push([index, revokeIndex]);
+      if (route === "wrap") {
+        const wrap = wrapOf.get(roleName) ?? { roleId, alters: [] };
+        wrap.alters.push(index);
+        wrapOf.set(roleName, wrap);
       }
       if (restricted) ownerAlters.push({ objId, roleName, index });
     };
@@ -795,6 +777,29 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         roleName,
         `${ownerAlterPrefix(fact)} OWNER TO ${qid(roleName)}`,
       );
+    }
+
+    // The shared GRANT/REVOKE consume nothing: as alters whose first consume
+    // is R they would count as in-place changes of R, and every create owned
+    // by R would then order after the REVOKE (a cycle). Explicit edges only.
+    for (const [roleName, { roleId, alters }] of wrapOf) {
+      const role = qid(roleName);
+      const applier = qid((capability as ApplierCapability).role);
+      const grant = pushAction(
+        "alter",
+        { sql: `GRANT ${role} TO ${applier}`, lockClass: "none" },
+        {},
+      );
+      const revoke = pushAction(
+        "alter",
+        { sql: `REVOKE ${role} FROM ${applier}`, lockClass: "none" },
+        {},
+      );
+      const roleProducer = producerOf.get(encodeId(roleId));
+      if (roleProducer !== undefined) orderAfter.push([roleProducer, grant]);
+      for (const alter of alters) {
+        orderAfter.push([grant, alter], [alter, revoke]);
+      }
     }
 
     // Schema-qualified owner ALTERs, restricted applier only: run after every

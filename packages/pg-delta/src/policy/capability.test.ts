@@ -411,7 +411,7 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
       sql === 'REVOKE "r2" FROM "app"' ? [i] : [],
     );
     const alters = all.flatMap((sql, i) =>
-      / OWNER TO "r2"$/.test(sql) ? [i] : [],
+      sql.endsWith(' OWNER TO "r2"') ? [i] : [],
     );
     expect(grants).toHaveLength(1);
     expect(revokes).toHaveLength(1);

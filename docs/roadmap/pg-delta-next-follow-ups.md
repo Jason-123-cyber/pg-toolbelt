@@ -1794,8 +1794,8 @@ The owner check moved from a `plan()` throw to a `capability.owner` warning that
 `apply()` refuses. Resolved in the same PR: the probe lists SET-able roles on
 PG16+ (an ADMIN-only grant no longer counts), an owner ALTER orders after a
 planned `GRANT r TO <applier>`, and an applier that may grant `r` to itself
-gets `GRANT → ALTER … OWNER TO → REVOKE` (three actions chained by explicit
-edges). Remaining:
+gets one `GRANT` before and one `REVOKE` after all of `r`'s owner ALTERs
+(separate actions chained by explicit edges). Remaining:
 
 - **Missing CREATE on the schema is not predicted.** A non-superuser
   `ALTER … OWNER TO r` also needs `r` to hold CREATE on the object's schema.
@@ -1803,8 +1803,6 @@ edges). Remaining:
   the desired state has none, the plan carries no warning and apply fails
   with `permission denied for schema`. Predicting it needs CREATE resolved
   through PUBLIC and inherited memberships.
-- **One GRANT/REVOKE pair per object.** Several objects owned by the same
-  role each get their own transient grant. Correct, just verbose.
 - **Roles the applier cannot grant stay flagged**, e.g. a Supabase role
   created by `supabase_admin` (no ADMIN for `postgres` on PG16+). Only a
   superuser or member applier can apply those.
