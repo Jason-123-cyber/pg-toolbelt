@@ -37,11 +37,11 @@ import {
   type RulesForId,
 } from "../rules.ts";
 import {
-  containingSchemaAclId,
   containingSchemaId,
   defaultPrivilegeCreateActions,
   membershipId,
   renderRevokeAllSql,
+  schemaAclId,
 } from "../rules/helpers.ts";
 import type { AcceptedRename } from "./change-set.ts";
 
@@ -815,14 +815,13 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         ownerAlters.map((o) => [encodeId(o.objId), o]),
       );
       for (const { objId, roleName, index } of ownerAlters) {
-        const aclId = containingSchemaAclId(objId, roleName);
-        if (aclId === undefined) continue;
-        for (const before of createsById.get(encodeId(aclId)) ?? []) {
+        const schemaId = containingSchemaId(objId);
+        if (schemaId === undefined) continue;
+        const aclKey = encodeId(schemaAclId(schemaId, roleName));
+        for (const before of createsById.get(aclKey) ?? []) {
           orderAfter.push([before, index]);
         }
-        const schemaAlter = ownerAlterOf.get(
-          encodeId(containingSchemaId(objId) as StableId),
-        );
+        const schemaAlter = ownerAlterOf.get(encodeId(schemaId));
         if (schemaAlter?.roleName === roleName) {
           orderAfter.push([schemaAlter.index, index]);
         }

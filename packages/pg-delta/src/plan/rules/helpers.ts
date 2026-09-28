@@ -144,14 +144,9 @@ export function containingSchemaId(id: StableId): StableId | undefined {
     : undefined;
 }
 
-/** Id of `grantee`'s ACL on the schema containing `id`; undefined when the
- *  kind is not schema-qualified. */
-export function containingSchemaAclId(
-  id: StableId,
-  grantee: string,
-): StableId | undefined {
-  const target = containingSchemaId(id);
-  return target === undefined ? undefined : { kind: "acl", target, grantee };
+/** Id of `grantee`'s ACL on `schemaId`. */
+export function schemaAclId(schemaId: StableId, grantee: string): StableId {
+  return { kind: "acl", target: schemaId, grantee };
 }
 
 export function roleFlagSql(payload: Fact["payload"]): string {

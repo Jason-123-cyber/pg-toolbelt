@@ -1814,6 +1814,17 @@ edges). Remaining:
   segment rolls back; the REVOKE never runs, so nothing is lost). Forcing
   `WITH SET TRUE` would make it run but let the REVOKE delete that grant.
   Needs the probe to report grantor-scoped self-grants; unusual setup.
+- **Owner role renamed in the same plan.** `createdByPlan` is read from the
+  role's producer, which is the RENAME action for an accepted role rename, so
+  a renamed role the applier did not create is treated as plan-created
+  (wrapped or direct) and the ALTER fails at apply inside its segment. Fix:
+  ignore rename producers and look up `memberOf`/`adminOf` under the source
+  name.
+- **Lock-budget split between the wrapper's actions.** `splitActions` packs
+  by lock estimate without edge knowledge, so `--max-locks` (or a depleted
+  lock probe) can put the GRANT and the ALTER in different transactions. A
+  failed ALTER then leaves `GRANT r TO <applier>` committed (no escalation; a
+  re-plan emits the REVOKE). Needs a keep-with-previous marker.
 - **Multi-statement actions under batched apply (pre-existing).** Batched
   apply maps a failure to an action by counting CommandComplete, one per
   action. The extension-member ACL restore (`rules/metadata.ts`) emits several
