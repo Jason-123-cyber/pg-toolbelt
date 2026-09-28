@@ -510,6 +510,10 @@ describe("owner edge: CREATEROLE applier makes the owner ALTER runnable", () => 
         ${pgMajor >= 150000 ? "GRANT CREATE ON SCHEMA public TO own_rpc_owner;" : ""}
         CREATE FUNCTION public.own_f() RETURNS int LANGUAGE sql AS 'select 1';
         ALTER FUNCTION public.own_f() OWNER TO own_rpc_owner;
+        -- a second object: each wrapper's REVOKE drops only the applier's own
+        -- grant, so the next GRANT still has ADMIN (PG16+)
+        CREATE FUNCTION public.own_g() RETURNS int LANGUAGE sql AS 'select 2';
+        ALTER FUNCTION public.own_g() OWNER TO own_rpc_owner;
       `);
 
     const applierPool = new pg.Pool({
@@ -539,9 +543,13 @@ describe("owner edge: CREATEROLE applier makes the owner ALTER runnable", () => 
       expect(report.error).toBeUndefined();
       expect(report.status).toBe("applied");
       const owner = await src.pool.query(
-        `SELECT proowner::regrole::text AS owner FROM pg_proc WHERE proname = 'own_f'`,
+        `SELECT proname, proowner::regrole::text AS owner FROM pg_proc
+          WHERE proname IN ('own_f', 'own_g') ORDER BY 1`,
       );
-      expect(owner.rows[0]).toEqual({ owner: "own_rpc_owner" });
+      expect(owner.rows).toEqual([
+        { proname: "own_f", owner: "own_rpc_owner" },
+        { proname: "own_g", owner: "own_rpc_owner" },
+      ]);
 
       const after = await ctx.extract(applierPool);
       const again = plan(after.factBase, dstState.factBase, ctx.planOptions);

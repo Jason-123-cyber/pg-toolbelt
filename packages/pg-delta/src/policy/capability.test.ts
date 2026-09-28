@@ -374,6 +374,54 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
     expect(tableAlter).toBeGreaterThan(schemaAlter);
   });
 
+  test("several objects owned by one wrapped role share one GRANT and one REVOKE", () => {
+    const tbl: StableId = { kind: "table", schema: "app", name: "t" };
+    const p = plan(
+      buildFactBase([], []),
+      buildFactBase(
+        [
+          f(schemaApp),
+          roleFact,
+          {
+            id: tbl,
+            payload: {
+              persistence: "p",
+              rowSecurity: false,
+              forceRowSecurity: false,
+              replicaIdentity: "d",
+              replicaIdentityIndex: null,
+              partitionKey: null,
+              partitionBound: null,
+              parentTable: null,
+            },
+          },
+        ],
+        [
+          { from: schemaApp, to: r2, kind: "owner" },
+          { from: tbl, to: r2, kind: "owner" },
+        ],
+      ),
+      { capability: creator(17) },
+    );
+    const all = sqls(p);
+    const grants = all.flatMap((sql, i) =>
+      sql === 'GRANT "r2" TO "app"' ? [i] : [],
+    );
+    const revokes = all.flatMap((sql, i) =>
+      sql === 'REVOKE "r2" FROM "app"' ? [i] : [],
+    );
+    const alters = all.flatMap((sql, i) =>
+      / OWNER TO "r2"$/.test(sql) ? [i] : [],
+    );
+    expect(grants).toHaveLength(1);
+    expect(revokes).toHaveLength(1);
+    expect(alters).toHaveLength(2);
+    for (const a of alters) {
+      expect(a).toBeGreaterThan(grants[0] as number);
+      expect(a).toBeLessThan(revokes[0] as number);
+    }
+  });
+
   test("a planned GRANT r TO applier orders the plain ALTER after it", () => {
     const app: Fact = { id: { kind: "role", name: "app" }, payload: {} };
     const p = plan(
