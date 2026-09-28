@@ -24,7 +24,7 @@ describe("probeApplierCapability (integration)", () => {
     expect(cap.memberOf).toContain(cap.role);
   }, 60_000);
 
-  test("a CREATEROLE creator can SET only roles it is granted; PG16+ reports ADMIN on roles it created", async () => {
+  test("a CREATEROLE creator can SET only roles it is granted and reports the roles it can grant", async () => {
     const cluster = await sharedCluster();
     const db = await cluster.createDb("cap_creator_probe");
     await cluster.adminPool
@@ -42,7 +42,12 @@ describe("probeApplierCapability (integration)", () => {
       // PG16+ records an ADMIN-only grant (no SET) for the creator; ALTER …
       // OWNER TO needs SET, so the role must not count as settable.
       expect(cap.memberOf).not.toContain("cap_made");
-      expect(cap.adminOf?.includes("cap_made")).toBe((cap.pgMajor ?? 0) >= 16);
+      // grantable: ADMIN OPTION on PG16+, any non-superuser role before
+      expect(cap.adminOf).toContain("cap_made");
+      expect(cap.adminOf).not.toContain("test");
+      expect(cap.createroleSelfGrant).toBe(
+        (cap.pgMajor ?? 0) >= 16 ? "" : undefined,
+      );
     } finally {
       await pool.query(`DROP ROLE IF EXISTS cap_made`).catch(() => {});
       await pool.end().catch(() => {});

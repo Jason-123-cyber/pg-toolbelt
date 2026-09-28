@@ -530,8 +530,8 @@ describe("owner edge: CREATEROLE applier makes the owner ALTER runnable", () => 
       );
       expect(thePlan.diagnostics).toBeUndefined();
       expect(
-        thePlan.actions.some((a) =>
-          a.sql.includes('GRANT "own_rpc_owner" TO "own_applier";\n'),
+        thePlan.actions.some(
+          (a) => a.sql === 'GRANT "own_rpc_owner" TO "own_applier"',
         ),
       ).toBe(true);
 

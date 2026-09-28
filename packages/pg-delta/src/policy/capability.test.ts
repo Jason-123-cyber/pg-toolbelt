@@ -257,66 +257,121 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
   const schemaApp: StableId = { kind: "schema", name: "app" };
   const r2: StableId = { kind: "role", name: "r2" };
   const selfGrant: StableId = { kind: "membership", role: "r2", member: "app" };
-  const creator = (pgMajor: number, adminOf: string[] = []) =>
-    ({
-      role: "app",
-      isSuperuser: false,
-      memberOf: [],
-      createRole: true,
-      pgMajor,
-      adminOf,
-    }) satisfies ApplierCapability;
-  const roleFact = (superuser = false): Fact => ({
-    id: r2,
-    payload: { superuser },
+  const creator = (
+    pgMajor: number,
+    extra: Partial<ApplierCapability> = {},
+  ): ApplierCapability => ({
+    role: "app",
+    isSuperuser: false,
+    memberOf: [],
+    createRole: true,
+    pgMajor,
+    adminOf: [],
+    ...extra,
   });
-  const desired = (extra: Fact[] = [], superuser = false) =>
+  const roleFact: Fact = { id: r2, payload: {} };
+  const desired = (extra: Fact[] = []) =>
     buildFactBase(
-      [f(schemaApp), roleFact(superuser), ...extra],
+      [f(schemaApp), roleFact, ...extra],
       [{ from: schemaApp, to: r2, kind: "owner" }],
     );
-  const wrapped =
-    'GRANT "r2" TO "app";\nALTER SCHEMA "app" OWNER TO "r2";\nREVOKE "r2" FROM "app"';
-  const ownerSql = (p: ReturnType<typeof plan>) =>
-    p.actions.filter((a) => a.sql.includes("OWNER TO")).map((a) => a.sql);
+  const alter = 'ALTER SCHEMA "app" OWNER TO "r2"';
+  const wrappedSequence = [
+    'GRANT "r2" TO "app"',
+    alter,
+    'REVOKE "r2" FROM "app"',
+  ];
+  const sqls = (p: ReturnType<typeof plan>) => p.actions.map((a) => a.sql);
+  const expectWrapped = (p: ReturnType<typeof plan>) => {
+    const all = sqls(p);
+    const at = wrappedSequence.map((sql) => all.indexOf(sql));
+    expect(at.every((i) => i >= 0)).toBe(true);
+    expect([...at].sort((x, y) => x - y)).toEqual(at);
+    expect(p.diagnostics).toBeUndefined();
+  };
 
   test("PG16+: owner role created by the plan → grant, alter, revoke", () => {
+    expectWrapped(
+      plan(buildFactBase([], []), desired(), { capability: creator(17) }),
+    );
+  });
+
+  test("PG16+: createrole_self_grant with SET already lets the creator own", () => {
     const p = plan(buildFactBase([], []), desired(), {
-      capability: creator(17),
+      capability: creator(17, { createroleSelfGrant: "set, inherit" }),
     });
-    expect(ownerSql(p)).toEqual([wrapped]);
+    expect(sqls(p)).toContain(alter);
+    expect(sqls(p).some((sql) => sql.startsWith('GRANT "r2"'))).toBe(false);
     expect(p.diagnostics).toBeUndefined();
   });
 
-  test("PG16+: existing role the applier holds ADMIN on → grant, alter, revoke", () => {
-    const p = plan(buildFactBase([roleFact()], []), desired(), {
-      capability: creator(17, ["r2"]),
+  test("PG16+: createrole_self_grant without SET stays flagged (REVOKE would drop it)", () => {
+    const p = plan(buildFactBase([], []), desired(), {
+      capability: creator(17, { createroleSelfGrant: "inherit" }),
     });
-    expect(ownerSql(p)).toEqual([wrapped]);
-    expect(p.diagnostics).toBeUndefined();
-  });
-
-  test("PG16+: existing role without ADMIN stays flagged", () => {
-    const p = plan(buildFactBase([roleFact()], []), desired(), {
-      capability: creator(17),
-    });
-    expect(ownerSql(p)).toEqual(['ALTER SCHEMA "app" OWNER TO "r2"']);
     expect(p.diagnostics?.map((d) => d.code)).toEqual([CAPABILITY_OWNER]);
   });
 
-  test("PG15: CREATEROLE applier can grant any non-superuser role", () => {
-    const p = plan(buildFactBase([roleFact()], []), desired(), {
-      capability: creator(15),
-    });
-    expect(ownerSql(p)).toEqual([wrapped]);
-    expect(p.diagnostics).toBeUndefined();
+  test("an existing role the probe reports as grantable → grant, alter, revoke", () => {
+    expectWrapped(
+      plan(buildFactBase([roleFact], []), desired(), {
+        capability: creator(17, { adminOf: ["r2"] }),
+      }),
+    );
   });
 
-  test("PG15: a superuser owner role stays flagged", () => {
-    const p = plan(buildFactBase([roleFact(true)], []), desired([], true), {
+  test("ADMIN OPTION alone is enough, without CREATEROLE", () => {
+    expectWrapped(
+      plan(buildFactBase([roleFact], []), desired(), {
+        capability: creator(17, { createRole: false, adminOf: ["r2"] }),
+      }),
+    );
+  });
+
+  test("an existing role the probe does not report stays flagged", () => {
+    const p = plan(buildFactBase([roleFact], []), desired(), {
       capability: creator(15),
     });
+    expect(sqls(p)).toContain(alter);
     expect(p.diagnostics?.map((d) => d.code)).toEqual([CAPABILITY_OWNER]);
+  });
+
+  test("an object ALTER orders after its schema's ALTER to the same role", () => {
+    const tbl: StableId = { kind: "table", schema: "app", name: "t" };
+    const p = plan(
+      buildFactBase([], []),
+      buildFactBase(
+        [
+          f(schemaApp),
+          roleFact,
+          {
+            id: tbl,
+            payload: {
+              persistence: "p",
+              rowSecurity: false,
+              forceRowSecurity: false,
+              replicaIdentity: "d",
+              replicaIdentityIndex: null,
+              partitionKey: null,
+              partitionBound: null,
+              parentTable: null,
+            },
+          },
+        ],
+        [
+          { from: schemaApp, to: r2, kind: "owner" },
+          { from: tbl, to: r2, kind: "owner" },
+        ],
+      ),
+      { capability: creator(17), compact: false },
+    );
+    const all = sqls(p);
+    const schemaAlter = all.indexOf(alter);
+    const tableAlter = all.findIndex((sql) =>
+      sql.startsWith('ALTER TABLE "app"."t" OWNER TO'),
+    );
+    expect(schemaAlter).toBeGreaterThanOrEqual(0);
+    expect(tableAlter).toBeGreaterThan(schemaAlter);
   });
 
   test("a planned GRANT r TO applier orders the plain ALTER after it", () => {
@@ -327,12 +382,10 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
       { capability: { role: "app", isSuperuser: false, memberOf: [] } },
     );
     const grant = p.actions.findIndex((a) => a.sql === 'GRANT "r2" TO "app"');
-    const alter = p.actions.findIndex(
-      (a) => a.sql === 'ALTER SCHEMA "app" OWNER TO "r2"',
-    );
+    const alterAt = p.actions.findIndex((a) => a.sql === alter);
     expect(grant).toBeGreaterThanOrEqual(0);
-    expect(alter).toBeGreaterThan(grant);
-    expect(p.actions[alter]?.consumes).toContainEqual(selfGrant);
+    expect(alterAt).toBeGreaterThan(grant);
+    expect(p.actions[alterAt]?.consumes).toContainEqual(selfGrant);
     expect(p.diagnostics).toBeUndefined();
   });
 });
