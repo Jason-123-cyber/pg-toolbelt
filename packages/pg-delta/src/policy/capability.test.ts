@@ -452,6 +452,13 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
         { capability: creator(17, { memberOf: ["r2"], usageOf: [] }) },
       );
       expect(p.diagnostics?.map((d) => d.code)).toEqual([CAPABILITY_OWNER]);
+      // the missing access is to the current owner, not the new one
+      expect(p.diagnostics?.[0]?.message).toMatch(/current owner "r1"/);
+      expect(p.diagnostics?.[0]?.context).toEqual({
+        role: "r2",
+        currentOwner: "r1",
+        applier: "app",
+      });
     });
 
     test("a planned GRANT current-owner TO applier counts, ordered before the ALTER", () => {
