@@ -422,6 +422,50 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
     }
   });
 
+  describe("owner change of an existing object also needs the current owner", () => {
+    const r1: Fact = { id: { kind: "role", name: "r1" }, payload: {} };
+    const ownedByR1 = buildFactBase(
+      [f(schemaApp), r1],
+      [{ from: schemaApp, to: r1.id, kind: "owner" }],
+    );
+    const ownedByR2 = (withR2: boolean) =>
+      buildFactBase(
+        [f(schemaApp), r1, ...(withR2 ? [roleFact] : [])],
+        [{ from: schemaApp, to: r2, kind: "owner" }],
+      );
+
+    test("flagged, not wrapped, when the applier cannot act as the current owner", () => {
+      const p = plan(ownedByR1, ownedByR2(true), {
+        capability: creator(17, { usageOf: [] }),
+      });
+      expect(sqls(p).some((sql) => sql.startsWith('GRANT "r2"'))).toBe(false);
+      expect(p.diagnostics?.map((d) => d.code)).toEqual([CAPABILITY_OWNER]);
+    });
+
+    test("flagged even when the new owner is directly settable", () => {
+      const p = plan(
+        buildFactBase([f(schemaApp), r1, roleFact], [
+          { from: schemaApp, to: r1.id, kind: "owner" },
+        ]),
+        ownedByR2(true),
+        { capability: creator(17, { memberOf: ["r2"], usageOf: [] }) },
+      );
+      expect(p.diagnostics?.map((d) => d.code)).toEqual([CAPABILITY_OWNER]);
+    });
+
+    test("not flagged when the applier has the current owner's privileges", () => {
+      const p = plan(
+        buildFactBase([f(schemaApp), r1, roleFact], [
+          { from: schemaApp, to: r1.id, kind: "owner" },
+        ]),
+        ownedByR2(true),
+        { capability: creator(17, { memberOf: ["r2"], usageOf: ["r1"] }) },
+      );
+      expect(sqls(p)).toContain(alter);
+      expect(p.diagnostics).toBeUndefined();
+    });
+  });
+
   test("a planned GRANT r TO applier orders the plain ALTER after it", () => {
     const app: Fact = { id: { kind: "role", name: "app" }, payload: {} };
     const p = plan(
