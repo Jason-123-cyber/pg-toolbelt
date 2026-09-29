@@ -33,6 +33,10 @@ export interface ApplierCapability {
    *  before PG16 every non-superuser role when it has CREATEROLE. Omitted on
    *  legacy artifacts / hand-built fixtures. */
   adminOf?: readonly string[];
+  /** roles whose privileges the applier has (inherited membership): an
+   *  object owned by one of them counts as its own for `ALTER … OWNER`.
+   *  Omitted on legacy artifacts / hand-built fixtures (memberOf is used). */
+  usageOf?: readonly string[];
   /** PG16+ `createrole_self_grant`: options a CREATEROLE applier grants
    *  itself on each role it creates. Omitted before PG16. */
   createroleSelfGrant?: string;
@@ -73,6 +77,11 @@ export async function probeApplierCapability(
                         AND (SELECT rolcreaterole FROM pg_catalog.pg_roles WHERE rolname = current_user)
                         AND NOT r.rolsuper))
            ) AS admin_of,
+           ARRAY(
+             SELECT r.rolname::text FROM pg_catalog.pg_roles r
+             WHERE pg_catalog.pg_has_role(current_user, r.oid, 'USAGE')
+               AND r.rolname NOT LIKE 'pg\\_%'
+           ) AS usage_of,
            CASE WHEN current_setting('server_version_num')::int >= 160000
                 THEN current_setting('createrole_self_grant') END AS createrole_self_grant
   `);
@@ -83,6 +92,7 @@ export async function probeApplierCapability(
     pg_major: number;
     member_of: string[] | null;
     admin_of: string[] | null;
+    usage_of: string[] | null;
     createrole_self_grant: string | null;
   };
   return {
@@ -90,6 +100,7 @@ export async function probeApplierCapability(
     isSuperuser: Boolean(row.is_superuser),
     memberOf: row.member_of ?? [],
     adminOf: row.admin_of ?? [],
+    usageOf: row.usage_of ?? [],
     createRole: Boolean(row.create_role),
     pgMajor: Number(row.pg_major),
     ...(row.createrole_self_grant !== null
@@ -143,6 +154,19 @@ export function capabilityExcludedRoots(
  */
 export function canSetOwner(cap: ApplierCapability, roleName: string): boolean {
   return cap.isSuperuser || cap.memberOf.includes(roleName);
+}
+
+/**
+ * Whether the applier may alter an object currently owned by `ownerName`:
+ * PostgreSQL requires the privileges of the current owner (or superuser) for
+ * `ALTER … OWNER TO`, on top of being able to become the new owner.
+ */
+export function canActAsOwner(
+  cap: ApplierCapability,
+  ownerName: string,
+): boolean {
+  if (cap.isSuperuser || ownerName === cap.role) return true;
+  return (cap.usageOf ?? cap.memberOf).includes(ownerName);
 }
 
 /**

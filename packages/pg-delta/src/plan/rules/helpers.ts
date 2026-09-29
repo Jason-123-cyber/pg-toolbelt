@@ -130,6 +130,11 @@ export const ROLE_FLAGS: Record<string, [on: string, off: string]> = {
   bypassRls: ["BYPASSRLS", "NOBYPASSRLS"],
 };
 
+/** Role name of a role id; undefined for any other kind. */
+export function roleNameOf(id: StableId): string | undefined {
+  return id.kind === "role" ? id.name : undefined;
+}
+
 /** Id of the membership `role` → `member` (`GRANT role TO member`). */
 export function membershipId(role: string, member: string): StableId {
   return { kind: "membership", role, member };

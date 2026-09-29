@@ -14,6 +14,7 @@ import type { Fact, FactBase } from "../../core/fact.ts";
 import { encodeId, type StableId } from "../../core/stable-id.ts";
 import {
   CAPABILITY_OWNER,
+  canActAsOwner,
   canSetOwner,
   selfOwnerRoute,
   type ApplierCapability,
@@ -42,6 +43,7 @@ import {
   identitySequenceId,
   membershipId,
   renderRevokeAllSql,
+  roleNameOf,
   schemaAclId,
 } from "../rules/helpers.ts";
 import type { AcceptedRename } from "./change-set.ts";
@@ -759,10 +761,20 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
       roleName: string,
       alterSql: string,
       releases?: StableId[],
+      currentOwner?: string,
     ): void => {
       const consumes: StableId[] = [roleId];
       let route: "direct" | "wrap" | "flag" = "direct";
-      if (capability !== undefined && !canSetOwner(capability, roleName)) {
+      if (
+        capability !== undefined &&
+        currentOwner !== undefined &&
+        !canActAsOwner(capability, currentOwner)
+      ) {
+        route = "flag";
+      } else if (
+        capability !== undefined &&
+        !canSetOwner(capability, roleName)
+      ) {
         const selfGrant = membershipId(roleName, capability.role);
         if (producerOf.has(encodeId(selfGrant))) consumes.push(selfGrant);
         else {
@@ -827,6 +839,10 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         roleName,
         `${prefix} OWNER TO ${qid(roleName)}`,
         oldRoleId !== undefined ? [oldRoleId] : undefined,
+        // an existing object keeps its source owner until this ALTER runs
+        oldRoleId !== undefined && source.has(objId)
+          ? roleNameOf(oldRoleId)
+          : undefined,
       );
       ownerEmitted.add(objKey);
     }

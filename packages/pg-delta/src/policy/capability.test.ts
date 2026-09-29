@@ -444,9 +444,10 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
 
     test("flagged even when the new owner is directly settable", () => {
       const p = plan(
-        buildFactBase([f(schemaApp), r1, roleFact], [
-          { from: schemaApp, to: r1.id, kind: "owner" },
-        ]),
+        buildFactBase(
+          [f(schemaApp), r1, roleFact],
+          [{ from: schemaApp, to: r1.id, kind: "owner" }],
+        ),
         ownedByR2(true),
         { capability: creator(17, { memberOf: ["r2"], usageOf: [] }) },
       );
@@ -455,9 +456,10 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
 
     test("not flagged when the applier has the current owner's privileges", () => {
       const p = plan(
-        buildFactBase([f(schemaApp), r1, roleFact], [
-          { from: schemaApp, to: r1.id, kind: "owner" },
-        ]),
+        buildFactBase(
+          [f(schemaApp), r1, roleFact],
+          [{ from: schemaApp, to: r1.id, kind: "owner" }],
+        ),
         ownedByR2(true),
         { capability: creator(17, { memberOf: ["r2"], usageOf: ["r1"] }) },
       );
