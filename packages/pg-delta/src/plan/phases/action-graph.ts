@@ -41,6 +41,9 @@ export interface FinalizeInput {
   source: FactBase;
   desired: FactBase;
   renameActionIndices: ReadonlySet<number>;
+  /** action index → encoded `destroys` ids that are side-effect wipes (see
+   *  ActionEmitterOutput.implicitDestroys). */
+  implicitDestroys: ReadonlyMap<number, ReadonlySet<string>>;
   /** extra `[before, after]` action-index edges the emitter knows but ids
    *  cannot express (e.g. after every action of a multi-statement create). */
   orderAfter: ReadonlyArray<readonly [number, number]>;
@@ -104,6 +107,7 @@ export function finalizeActions(input: FinalizeInput): FinalizeOutput {
     source,
     desired,
     renameActionIndices,
+    implicitDestroys,
     orderAfter,
     foldHints,
     acceptsFolds,
@@ -146,6 +150,7 @@ export function finalizeActions(input: FinalizeInput): FinalizeOutput {
     assumedSchemaNames,
     assumedPresentIds,
     evaluatorActions,
+    implicitDestroys,
     orderAfter,
   );
 

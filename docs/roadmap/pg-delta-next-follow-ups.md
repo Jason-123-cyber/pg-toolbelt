@@ -1972,11 +1972,25 @@ supabase/pg-toolbelt#359, which was closed as a duplicate of #332 item 4
 
 Deferred:
 
-- **Object-level `REVOKE ALL` wipes same-role column grants.** Pre-existing
-  for tables, and now reachable for views: PostgreSQL revokes matching column
-  privileges with any table-level revoke, and the planner neither orders the
-  column GRANT after it nor re-emits it on replace.
-  https://github.com/supabase/pg-toolbelt/issues/491 (next PR).
+- **Object-level `REVOKE ALL` wipes same-role column grants** — FIXED
+  (https://github.com/supabase/pg-toolbelt/issues/491). PostgreSQL revokes
+  matching column privileges with any table-level revoke. The `acl` rule now
+  declares the same-grantee column acls as `implicitlyDestroys` of the
+  object-level acl; the emitter attaches them to the leading REVOKE's
+  `destroys` (so the graph orders every column GRANT after it) and
+  replacement expansion recreates the surviving column acls. Corpus:
+  `privilege-operations--column-grant-under-default-privileges`,
+  `privilege-operations--object-grant-change-keeps-column-grants`,
+  `privilege-operations--object-grant-removed-keeps-column-grants`.
+- **Column rename + object-level grant change in one plan** (renames
+  `auto` / `prompt` only; predates #491). An accepted column rename cancels
+  both column-acl ids out of the add / remove sets, so the implicit-wipe
+  survivor check skips them, and the wipe's reproduce edge orders the
+  object-level `REVOKE ALL` before the `RENAME COLUMN`: the renamed column's
+  grant is lost. Fix direction: treat a wiped desired-side column acl produced
+  by an accepted rename as a survivor and re-grant it after both the rename
+  and the wipe. Pinned by the `test.failing` case in
+  `src/plan/column-grant-revoke-order.test.ts`.
 - **Extension-member relations.** Column grants on extension-owned views stay
   invisible, like extension-owned table columns today (`columnsFamily` also
   filters `notExtensionMember`). A correct fix needs a column-aware
