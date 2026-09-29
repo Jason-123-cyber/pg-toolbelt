@@ -109,13 +109,21 @@ function ownerCapabilityDiagnostic(
   objId: StableId,
   roleName: string,
   applier: string,
+  currentOwner?: string,
 ): Diagnostic {
+  const target = `cannot set owner of ${encodeId(objId)} to role "${roleName}"`;
   return {
     code: CAPABILITY_OWNER,
     severity: "warning",
     subject: objId,
-    message: `cannot set owner of ${encodeId(objId)} to role "${roleName}" — applier "${applier}" is not a superuser or a member of that role; grant membership or apply as a member/superuser`,
-    context: { role: roleName, applier },
+    message:
+      currentOwner === undefined
+        ? `${target} — applier "${applier}" is not a superuser or a member of that role; grant membership or apply as a member/superuser`
+        : `${target} — applier "${applier}" lacks the privileges of the current owner "${currentOwner}"; grant membership in "${currentOwner}" or apply as a member/superuser`,
+    context:
+      currentOwner === undefined
+        ? { role: roleName, applier }
+        : { role: roleName, currentOwner, applier },
   };
 }
 
@@ -803,6 +811,7 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
     ): void => {
       const consumes: StableId[] = [roleId];
       let route: "direct" | "wrap" | "flag" = "direct";
+      let blockedByCurrentOwner = false;
       const plannedCurrentOwnerGrant =
         capability !== undefined && currentOwner !== undefined
           ? membershipId(currentOwner, capability.role)
@@ -819,6 +828,7 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
           consumes.push(plannedCurrentOwnerGrant);
         } else {
           route = "flag";
+          blockedByCurrentOwner = true;
         }
       }
       if (
@@ -838,7 +848,12 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
       }
       if (route === "flag" && capability !== undefined) {
         diagnostics.push(
-          ownerCapabilityDiagnostic(objId, roleName, capability.role),
+          ownerCapabilityDiagnostic(
+            objId,
+            roleName,
+            capability.role,
+            blockedByCurrentOwner ? currentOwner : undefined,
+          ),
         );
       }
       const index = pushAction(
