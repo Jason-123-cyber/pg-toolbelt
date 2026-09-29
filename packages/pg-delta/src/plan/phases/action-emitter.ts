@@ -839,10 +839,9 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         roleName,
         `${prefix} OWNER TO ${qid(roleName)}`,
         oldRoleId !== undefined ? [oldRoleId] : undefined,
-        // an existing object keeps its source owner until this ALTER runs
-        oldRoleId !== undefined && source.has(objId)
-          ? roleNameOf(oldRoleId)
-          : undefined,
+        // an existing (or renamed) object keeps its source owner until this
+        // ALTER runs; a created object has no source owner
+        oldRoleId !== undefined ? roleNameOf(oldRoleId) : undefined,
       );
       ownerEmitted.add(objKey);
     }

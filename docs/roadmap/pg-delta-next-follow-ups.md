@@ -1817,6 +1817,19 @@ gets one `GRANT` before and one `REVOKE` after all of `r`'s owner ALTERs
   segment rolls back; the REVOKE never runs, so nothing is lost). Forcing
   `WITH SET TRUE` would make it run but let the REVOKE delete that grant.
   Needs the probe to report grantor-scoped self-grants; unusual setup.
+- **Schema owner needs database CREATE (PR #493 Codex).** A non-superuser
+  `ALTER SCHEMA … OWNER TO r` also requires `r` to hold CREATE on the
+  database; database privileges are not modeled or probed, so such a plan
+  carries no warning. A co-created schema folded into
+  `CREATE SCHEMA … AUTHORIZATION r` does not need it (only the invoker's
+  CREATE), so a check must know whether the fold applies. Belongs with the
+  wrapper redesign; the direct-route case predates this PR.
+- **Plan revokes the applier's membership in the current owner (PR #493
+  Codex).** If the same plan drops `REVOKE r1 FROM <applier>` while changing
+  an object's owner r1 → r2, the drop phase can run the REVOKE first and the
+  ALTER then lacks the current owner's privileges. Needs the owner ALTER to
+  order before removal of the membership that supplies them; applies to the
+  direct route as well and predates this PR.
 - **Owner role renamed in the same plan.** `createdByPlan` is read from the
   role's producer, which is the RENAME action for an accepted role rename, so
   a renamed role the applier did not create is treated as plan-created
