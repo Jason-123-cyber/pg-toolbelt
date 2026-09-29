@@ -1840,6 +1840,12 @@ gets one `GRANT` before and one `REVOKE` after all of `r`'s owner ALTERs
   it with `current_user`. A plan run by another non-superuser can fail at
   the owner change. Planned as an apply guard (refuse or re-probe on
   mismatch).
+- **Temporary grant outlives a segment boundary (PR #493 Codex / review).**
+  The wrapper's GRANT and REVOKE are ordered around the owner ALTERs only;
+  a `commitBoundaryAfter` or non-transactional action (e.g. `CREATE INDEX
+  CONCURRENTLY` on the re-owned table, `ALTER TYPE … ADD VALUE`) can land
+  between them, so a later failure leaves the grant committed. Needs the
+  wrapper kept inside one transactional segment.
 - **Owner role renamed in the same plan.** `createdByPlan` is read from the
   role's producer, which is the RENAME action for an accepted role rename, so
   a renamed role the applier did not create is treated as plan-created

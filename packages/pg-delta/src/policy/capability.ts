@@ -172,27 +172,21 @@ export function canActAsOwner(
 /**
  * How a non-superuser applier that cannot set `roleName` directly can still
  * run `ALTER … OWNER TO roleName`:
- *  - "direct": a role it creates in this plan already self-grants SET
- *    (`createrole_self_grant` includes `set`);
  *  - "wrap": it may grant the role to itself, so GRANT → ALTER → REVOKE —
- *    a role it creates with no self-grant (PG16+ leaves it ADMIN; before PG16
- *    CREATEROLE grants any non-superuser role), or one in `adminOf`;
- *  - "flag": neither. Also when a created role self-grants without `set`: the
- *    REVOKE would remove that grant.
+ *    a role it creates (PG16+ leaves it ADMIN; before PG16 CREATEROLE grants
+ *    any non-superuser role), or one in `adminOf`;
+ *  - "flag": neither. Also for a created role when `createrole_self_grant`
+ *    is non-empty: that session setting is not reproduced at apply, and its
+ *    self-grant row would be removed by the REVOKE.
  * Unknown probe fields (legacy JSON) fall to "flag".
  */
 export function selfOwnerRoute(
   cap: ApplierCapability,
   roleName: string,
   createdByPlan: boolean,
-): "direct" | "wrap" | "flag" {
+): "wrap" | "flag" {
   if (createdByPlan && cap.createRole === true) {
-    const selfGrant = (cap.createroleSelfGrant ?? "")
-      .split(",")
-      .map((option) => option.trim().toLowerCase())
-      .filter((option) => option.length > 0);
-    if (selfGrant.includes("set")) return "direct";
-    return selfGrant.length === 0 ? "wrap" : "flag";
+    return (cap.createroleSelfGrant ?? "").trim() === "" ? "wrap" : "flag";
   }
   return (cap.adminOf ?? []).includes(roleName) ? "wrap" : "flag";
 }
