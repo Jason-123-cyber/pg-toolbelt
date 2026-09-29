@@ -454,6 +454,37 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
       expect(p.diagnostics?.map((d) => d.code)).toEqual([CAPABILITY_OWNER]);
     });
 
+    test("a planned GRANT current-owner TO applier counts, ordered before the ALTER", () => {
+      const app: Fact = { id: { kind: "role", name: "app" }, payload: {} };
+      const viaR1: StableId = {
+        kind: "membership",
+        role: "r1",
+        member: "app",
+      };
+      const p = plan(
+        buildFactBase(
+          [f(schemaApp), r1, roleFact, app],
+          [{ from: schemaApp, to: r1.id, kind: "owner" }],
+        ),
+        buildFactBase(
+          [
+            f(schemaApp),
+            r1,
+            roleFact,
+            app,
+            { id: viaR1, payload: { admin: false } },
+          ],
+          [{ from: schemaApp, to: r2, kind: "owner" }],
+        ),
+        { capability: creator(17, { memberOf: ["r2"], usageOf: [] }) },
+      );
+      const grant = sqls(p).indexOf('GRANT "r1" TO "app"');
+      const alterAt = sqls(p).indexOf(alter);
+      expect(p.diagnostics).toBeUndefined();
+      expect(grant).toBeGreaterThanOrEqual(0);
+      expect(alterAt).toBeGreaterThan(grant);
+    });
+
     test("not flagged when the applier has the current owner's privileges", () => {
       const p = plan(
         buildFactBase(
