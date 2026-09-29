@@ -1827,9 +1827,11 @@ gets one `GRANT` before and one `REVOKE` after all of `r`'s owner ALTERs
 - **Plan revokes the applier's membership in the current owner (PR #493
   Codex).** If the same plan drops `REVOKE r1 FROM <applier>` while changing
   an object's owner r1 → r2, the drop phase can run the REVOKE first and the
-  ALTER then lacks the current owner's privileges. Needs the owner ALTER to
-  order before removal of the membership that supplies them; applies to the
-  direct route as well and predates this PR.
+  ALTER then lacks the current owner's privileges. Same shape for the
+  wrapper: a planned REVOKE of the applier's ADMIN on the new owner can sort
+  before the wrapper's GRANT. Needs owner work (ALTER / wrapper GRANT) to
+  order before removal of the membership that supplies its privileges; the
+  current-owner case applies to the direct route too and predates this PR.
 - **Existing object with no modeled source owner (PR #493 Codex).** The
   current-owner check only runs when the source owner edge is known. The
   `public` schema's built-in `pg_database_owner` edge is omitted at extract,
