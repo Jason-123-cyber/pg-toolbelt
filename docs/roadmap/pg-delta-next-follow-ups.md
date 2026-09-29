@@ -1802,7 +1802,7 @@ planned `GRANT r TO <applier>`, and an applier that may grant `r` to itself
 gets one `GRANT` before and one `REVOKE` after all of `r`'s owner ALTERs
 (separate actions chained by explicit edges). Remaining:
 
-- **Missing CREATE on the schema is not predicted.** A non-superuser
+- **Missing CREATE on the schema is not predicted (also PR #493 Codex).** A non-superuser
   `ALTER … OWNER TO r` also needs `r` to hold CREATE on the object's schema.
   The owner ALTER now orders after a planned schema grant to `r`, but when
   the desired state has none, the plan carries no warning and apply fails
@@ -1830,6 +1830,16 @@ gets one `GRANT` before and one `REVOKE` after all of `r`'s owner ALTERs
   ALTER then lacks the current owner's privileges. Needs the owner ALTER to
   order before removal of the membership that supplies them; applies to the
   direct route as well and predates this PR.
+- **Existing object with no modeled source owner (PR #493 Codex).** The
+  current-owner check only runs when the source owner edge is known. The
+  `public` schema's built-in `pg_database_owner` edge is omitted at extract,
+  so an owner change of `public` is treated like a fresh object and may be
+  wrapped without proving the applier can act as its owner.
+- **Executing role ≠ plan applier (PR #493 Codex).** The wrapper names
+  `plan.capability.role`; `apply()` / `pgdelta apply --plan` never compare
+  it with `current_user`. A plan run by another non-superuser can fail at
+  the owner change. Planned as an apply guard (refuse or re-probe on
+  mismatch).
 - **Owner role renamed in the same plan.** `createdByPlan` is read from the
   role's producer, which is the RENAME action for an accepted role rename, so
   a renamed role the applier did not create is treated as plan-created

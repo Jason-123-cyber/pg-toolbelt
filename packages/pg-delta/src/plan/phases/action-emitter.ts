@@ -765,13 +765,26 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
     ): void => {
       const consumes: StableId[] = [roleId];
       let route: "direct" | "wrap" | "flag" = "direct";
+      const plannedCurrentOwnerGrant =
+        capability !== undefined && currentOwner !== undefined
+          ? membershipId(currentOwner, capability.role)
+          : undefined;
       if (
         capability !== undefined &&
         currentOwner !== undefined &&
         !canActAsOwner(capability, currentOwner)
       ) {
-        route = "flag";
-      } else if (
+        if (
+          plannedCurrentOwnerGrant !== undefined &&
+          producerOf.has(encodeId(plannedCurrentOwnerGrant))
+        ) {
+          consumes.push(plannedCurrentOwnerGrant);
+        } else {
+          route = "flag";
+        }
+      }
+      if (
+        route !== "flag" &&
         capability !== undefined &&
         !canSetOwner(capability, roleName)
       ) {
