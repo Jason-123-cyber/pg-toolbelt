@@ -296,13 +296,12 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
     );
   });
 
-  test("PG16+: createrole_self_grant with SET already lets the creator own", () => {
+  test("PG16+: a non-default createrole_self_grant is flagged (session-local, not reproduced at apply)", () => {
     const p = plan(buildFactBase([], []), desired(), {
       capability: creator(17, { createroleSelfGrant: "set, inherit" }),
     });
-    expect(sqls(p)).toContain(alter);
     expect(sqls(p).some((sql) => sql.startsWith('GRANT "r2"'))).toBe(false);
-    expect(p.diagnostics).toBeUndefined();
+    expect(p.diagnostics?.map((d) => d.code)).toEqual([CAPABILITY_OWNER]);
   });
 
   test("PG16+: createrole_self_grant without SET stays flagged (REVOKE would drop it)", () => {
