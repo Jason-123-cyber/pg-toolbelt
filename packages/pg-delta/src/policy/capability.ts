@@ -37,6 +37,9 @@ export interface ApplierCapability {
    *  object owned by one of them counts as its own for `ALTER … OWNER`.
    *  Omitted on legacy artifacts / hand-built fixtures (memberOf is used). */
   usageOf?: readonly string[];
+  /** INHERIT on the applying role: a plain grant it receives confers the
+   *  granted role's privileges. Omitted on legacy artifacts (assumed true). */
+  inherit?: boolean;
   /** PG16+ `createrole_self_grant`: options a CREATEROLE applier grants
    *  itself on each role it creates. Omitted before PG16. */
   createroleSelfGrant?: string;
@@ -61,6 +64,7 @@ export async function probeApplierCapability(
     SELECT current_user AS role,
            (SELECT rolsuper FROM pg_catalog.pg_roles WHERE rolname = current_user) AS is_superuser,
            (SELECT rolcreaterole FROM pg_catalog.pg_roles WHERE rolname = current_user) AS create_role,
+           (SELECT rolinherit FROM pg_catalog.pg_roles WHERE rolname = current_user) AS inherit,
            (current_setting('server_version_num')::int / 10000) AS pg_major,
            ARRAY(
              SELECT r.rolname::text FROM pg_catalog.pg_roles r
@@ -89,6 +93,7 @@ export async function probeApplierCapability(
     role: string;
     is_superuser: boolean;
     create_role: boolean;
+    inherit: boolean;
     pg_major: number;
     member_of: string[] | null;
     admin_of: string[] | null;
@@ -102,6 +107,7 @@ export async function probeApplierCapability(
     adminOf: row.admin_of ?? [],
     usageOf: row.usage_of ?? [],
     createRole: Boolean(row.create_role),
+    inherit: Boolean(row.inherit),
     pgMajor: Number(row.pg_major),
     ...(row.createrole_self_grant !== null
       ? { createroleSelfGrant: String(row.createrole_self_grant) }

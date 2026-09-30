@@ -801,6 +801,16 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
       roleName: string;
       index: number;
     }> = [];
+    const canDropAsSchemaOwner = (objId: StableId): boolean => {
+      if (capability === undefined) return true;
+      const schemaId = containingSchemaId(objId);
+      if (schemaId === undefined) return false;
+      const owner = source
+        .outgoingEdges(schemaId)
+        .find((e) => e.kind === "owner")?.to;
+      const ownerName = owner !== undefined ? roleNameOf(owner) : undefined;
+      return ownerName !== undefined && canActAsOwner(capability, ownerName);
+    };
     const emitOwnerAlter = (
       objId: StableId,
       roleId: StableId,
@@ -821,8 +831,11 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         currentOwner !== undefined &&
         !canActAsOwner(capability, currentOwner)
       ) {
+        // a plain GRANT confers the owner's privileges only to an INHERIT
+        // applier (the PG16+ INHERIT option defaults from the member)
         if (
           plannedCurrentOwnerGrant !== undefined &&
+          capability.inherit !== false &&
           producerOf.has(encodeId(plannedCurrentOwnerGrant))
         ) {
           consumes.push(plannedCurrentOwnerGrant);
@@ -906,8 +919,14 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         `${prefix} OWNER TO ${qid(roleName)}`,
         oldRoleId !== undefined ? [oldRoleId] : undefined,
         // an existing (or renamed) object keeps its source owner until this
-        // ALTER runs; a created object has no source owner
-        oldRoleId !== undefined ? roleNameOf(oldRoleId) : undefined,
+        // ALTER runs; a created object has no source owner. One the plan drops
+        // and recreates is the applier's once the CREATE runs, and its DROP is
+        // allowed to the schema owner too, so that suffices instead.
+        oldRoleId === undefined ||
+          ((replaceIds.has(objKey) || recreatedByReplace.has(objKey)) &&
+            canDropAsSchemaOwner(objId))
+          ? undefined
+          : roleNameOf(oldRoleId),
       );
       ownerEmitted.add(objKey);
     }

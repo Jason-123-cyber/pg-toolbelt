@@ -1842,6 +1842,29 @@ gets one `GRANT` before and one `REVOKE` after all of `r`'s owner ALTERs
   it with `current_user`. A plan run by another non-superuser can fail at
   the owner change. Planned as an apply guard (refuse or re-probe on
   mismatch).
+- **Serial sequence re-owned to a wrapped role (PR #493 review).** The
+  wrapper's GRANT has no subject, so it sorts late; the owned sequence's
+  owner ALTER then runs after `ALTER SEQUENCE … OWNED BY`, and PostgreSQL
+  refuses (`cannot change owner of sequence`). Reproduces for a new
+  `bigserial` table and for an existing serial table. No diagnostic.
+- **PG16+ desired self-membership hidden by the ADMIN projection (PR #493
+  review).** `extract/roles.ts` merges grantor rows with
+  `bool_or(admin_option)`, so a desired SET/INHERIT grant of `r` to the
+  applier folds into the bootstrap ADMIN row and #461 projects it out. The
+  wrapper then REVOKEs it: the base diverges (applier loses `r`'s
+  privileges) while the re-plan is `[]`. Needs PG16+ `set`/`inherit`
+  modeled on memberships and the projection limited to the pure ADMIN row.
+- **Superuser-executed wrapper REVOKE drops the applier's ADMIN row (PR #493
+  review).** Run over a superuser connection, the bare `GRANT r TO a` is a
+  no-op and the bare `REVOKE r FROM a` removes `a`'s bootstrap ADMIN row
+  (PG16+); apply and prove report success and the re-plan is `[]`. Distinct
+  from the executing-role entry below. Candidate fix: `GRANTED BY a` on
+  both statements (verified on PG15–17 by the reviewer).
+- **NOINHERIT applier: schema + object re-own (PR #493 review).** The bare
+  GRANT gives SET but no inherited privileges, so after re-owning a schema
+  to `r` the object ALTER in it fails with `permission denied for schema`.
+  Candidate fix: `GRANT … WITH INHERIT TRUE` on PG16+, flag before PG16
+  when the applier has no `rolinherit`.
 - **Temporary grant outlives a segment boundary (PR #493 Codex / review).**
   The wrapper's GRANT and REVOKE are ordered around the owner ALTERs only;
   a `commitBoundaryAfter` or non-transactional action (e.g. `CREATE INDEX
