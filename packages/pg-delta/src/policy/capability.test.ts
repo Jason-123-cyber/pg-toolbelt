@@ -611,6 +611,42 @@ describe("ApplierCapability — owner change of an object the plan recreates", (
     expect(p.diagnostics).toBeUndefined();
   });
 
+  test("a replace that keeps its owner still needs that owner (or the schema owner) to DROP", () => {
+    const edges = (schemaOwner: string) => [
+      {
+        from: sch,
+        to: { kind: "role", name: schemaOwner } as StableId,
+        kind: "owner" as const,
+      },
+      { from: s1, to: me, kind: "owner" as const },
+      { from: s2, to: me, kind: "owner" as const },
+      {
+        from: ft,
+        to: { kind: "role", name: "r1" } as StableId,
+        kind: "owner" as const,
+      },
+    ];
+    const withAdminOnR1 = {
+      role: "me",
+      isSuperuser: false,
+      memberOf: ["me"],
+      usageOf: ["me"],
+      adminOf: ["r1"],
+    };
+    const blocked = plan(
+      buildFactBase(facts("s1"), edges("r3")),
+      buildFactBase(facts("s2"), edges("r3")),
+      { capability: withAdminOnR1 },
+    );
+    expect(blocked.diagnostics?.map((d) => d.code)).toEqual([CAPABILITY_OWNER]);
+    const asSchemaOwner = plan(
+      buildFactBase(facts("s1"), edges("me")),
+      buildFactBase(facts("s2"), edges("me")),
+      { capability: withAdminOnR1 },
+    );
+    expect(asSchemaOwner.diagnostics).toBeUndefined();
+  });
+
   test("without the schema owner's privileges the DROP still needs the old owner", () => {
     expect(planned("r3").diagnostics?.map((d) => d.code)).toEqual([
       CAPABILITY_OWNER,
