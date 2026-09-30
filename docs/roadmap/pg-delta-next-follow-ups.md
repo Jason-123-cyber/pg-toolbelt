@@ -1876,7 +1876,11 @@ gets one `GRANT` before and one `REVOKE` after all of `r`'s owner ALTERs
   a renamed role the applier did not create is treated as plan-created
   (wrapped or direct) and the ALTER fails at apply inside its segment. Fix:
   ignore rename producers and look up `memberOf`/`adminOf` under the source
-  name.
+  name. The reverse also happens (PR #493 Codex): the probe's role lists
+  carry pre-rename names, so an owner route to the renamed role can be
+  flagged although PostgreSQL keeps the membership by OID. That direction
+  only over-refuses; normalizing the capability's role sets through accepted
+  role renames fixes both.
 - **Lock-budget split between the wrapper's actions.** `splitActions` packs
   by lock estimate without edge knowledge, so `--max-locks` (or a depleted
   lock probe) can put the GRANT and the ALTER in different transactions. A
