@@ -491,6 +491,35 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
       expect(alterAt).toBeGreaterThan(grant);
     });
 
+    test("a planned current-owner grant does not count for a NOINHERIT applier", () => {
+      const app: Fact = { id: { kind: "role", name: "app" }, payload: {} };
+      const viaR1: StableId = { kind: "membership", role: "r1", member: "app" };
+      const p = plan(
+        buildFactBase(
+          [f(schemaApp), r1, roleFact, app],
+          [{ from: schemaApp, to: r1.id, kind: "owner" }],
+        ),
+        buildFactBase(
+          [
+            f(schemaApp),
+            r1,
+            roleFact,
+            app,
+            { id: viaR1, payload: { admin: false } },
+          ],
+          [{ from: schemaApp, to: r2, kind: "owner" }],
+        ),
+        {
+          capability: creator(17, {
+            memberOf: ["r2"],
+            usageOf: [],
+            inherit: false,
+          }),
+        },
+      );
+      expect(p.diagnostics?.map((d) => d.code)).toEqual([CAPABILITY_OWNER]);
+    });
+
     test("not flagged when the applier has the current owner's privileges", () => {
       const p = plan(
         buildFactBase(
@@ -518,5 +547,73 @@ describe("ApplierCapability — owner ALTER the applier can make runnable", () =
     expect(alterAt).toBeGreaterThan(grant);
     expect(p.actions[alterAt]?.consumes).toContainEqual(selfGrant);
     expect(p.diagnostics).toBeUndefined();
+  });
+});
+
+describe("ApplierCapability — owner change of an object the plan recreates", () => {
+  const w: StableId = { kind: "fdw", name: "w" };
+  const s1: StableId = { kind: "server", name: "s1" };
+  const s2: StableId = { kind: "server", name: "s2" };
+  const sch: StableId = { kind: "schema", name: "app" };
+  const ft: StableId = { kind: "foreignTable", schema: "app", name: "ft" };
+  const role = (name: string): Fact => ({
+    id: { kind: "role", name },
+    payload: {},
+  });
+  const serverPayload = { fdw: "w", type: null, version: null, options: [] };
+  const facts = (server: string): Fact[] => [
+    { id: w, payload: { handler: null, validator: null, options: [] } },
+    { id: s1, payload: serverPayload },
+    { id: s2, payload: serverPayload },
+    role("r1"),
+    role("r2"),
+    role("r3"),
+    role("me"),
+    { id: sch, payload: {} },
+    { id: ft, parent: sch, payload: { server, options: [] } },
+  ];
+  const me: StableId = { kind: "role", name: "me" };
+  // the server change forces DROP + CREATE; the owner moves r1 → r2
+  const planned = (schemaOwner: string) => {
+    const edges = (tableOwner: string) => [
+      {
+        from: sch,
+        to: { kind: "role", name: schemaOwner } as StableId,
+        kind: "owner" as const,
+      },
+      { from: s1, to: me, kind: "owner" as const },
+      { from: s2, to: me, kind: "owner" as const },
+      {
+        from: ft,
+        to: { kind: "role", name: tableOwner } as StableId,
+        kind: "owner" as const,
+      },
+    ];
+    return plan(
+      buildFactBase(facts("s1"), edges("r1")),
+      buildFactBase(facts("s2"), edges("r2")),
+      {
+        capability: {
+          role: "me",
+          isSuperuser: false,
+          memberOf: ["me", "r2"],
+          usageOf: ["me"],
+        },
+      },
+    );
+  };
+
+  test("the schema owner may drop and recreate it, so the old owner is not needed", () => {
+    const p = planned("me");
+    expect(p.actions.map((a) => a.sql)).toContain(
+      'ALTER FOREIGN TABLE "app"."ft" OWNER TO "r2"',
+    );
+    expect(p.diagnostics).toBeUndefined();
+  });
+
+  test("without the schema owner's privileges the DROP still needs the old owner", () => {
+    expect(planned("r3").diagnostics?.map((d) => d.code)).toEqual([
+      CAPABILITY_OWNER,
+    ]);
   });
 });
