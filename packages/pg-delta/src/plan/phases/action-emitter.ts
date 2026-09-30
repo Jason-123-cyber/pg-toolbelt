@@ -950,11 +950,15 @@ export function emitActions(input: ActionEmitterInput): ActionEmitterOutput {
         .find((e) => e.kind === "owner");
       if (ownerEdge?.to.kind !== "role") continue;
       const roleName = (ownerEdge.to as { kind: "role"; name: string }).name;
+      // the replace's DROP needs the unchanged owner's privileges, or the
+      // containing schema owner's
       emitOwnerAlter(
         fact.id,
         ownerEdge.to,
         roleName,
         `${ownerAlterPrefix(fact)} OWNER TO ${qid(roleName)}`,
+        undefined,
+        canDropAsSchemaOwner(fact.id) ? undefined : roleName,
       );
     }
 
