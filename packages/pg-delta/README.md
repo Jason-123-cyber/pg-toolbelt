@@ -62,6 +62,31 @@ await apply(migration, sourcePool);
 // await apply(splitPlan(migration, { maxLocks: budget.available }), sourcePool);
 ```
 
+### Bring your own Pool
+
+`extract()` is typed against `pg.Pool`, but it only uses a small part of it. To
+extract from something that is not node-pg (an embedded PGlite, a driver
+wrapper), your object must provide:
+
+- **`connect(callback)`** in node-pg's callback form,
+  `(err, client, release) => void`. The promise form `connect()` is not enough.
+- **A client with `query(text)`, `on(event, fn)`, `removeListener(event, fn)` and
+  `release(err?)`.** `release` may be called with an error.
+- **Multi-statement text in `client.query(text)`.** Extraction sends
+  parameterless batches such as `BEGIN …; SET LOCAL …; SELECT …` in one call, over
+  the simple query protocol. It expects one `{ rows }` result for a single
+  statement and an array of results, in statement order, for several. The batches
+  run inside an open transaction, so a failed attempt aborts it: send
+  parameterless text straight to the simple-protocol path, never "try the
+  extended protocol, then fall back".
+- **`options.max`, `totalCount` and `idleCount`**, used to size parallel
+  extraction. A single-connection pool should report `options.max = 1` and hand
+  out one client at a time. Extraction then stays serial whatever `concurrency`
+  asks for.
+
+In the repository, `packages/pg-delta/tests/pglite-pool.ts` is a reference
+adapter for PGlite. `tests/pglite-pool.test.ts` checks it against PostgreSQL 17.
+
 ## Commands
 
 | Command | What it does |
