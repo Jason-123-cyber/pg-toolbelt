@@ -12,6 +12,7 @@ import { describe, expect, test } from "bun:test";
 import type { Fact } from "../core/fact.ts";
 import { encodeId, type StableId } from "../core/stable-id.ts";
 import { catalogBatchPlan, pruneOrphanedSatellites } from "./extract.ts";
+import { normalizeTriggerDef } from "./relations.ts";
 
 const present: StableId = { kind: "table", schema: "public", name: "present" };
 const filtered: StableId = {
@@ -83,6 +84,33 @@ describe("pruneOrphanedSatellites — satellites never outlive their target", ()
  * dropped all those objects". These pin the invariants the resolver enforces,
  * and (by importing the module at all) that the resolver actually ran.
  */
+
+describe("normalizeTriggerDef", () => {
+  test("prefers the canonical WHEN expression from tgqual to avoid nested OR churn", () => {
+    const def =
+      "CREATE TRIGGER t AFTER UPDATE ON public.tt FOR EACH ROW " +
+      "WHEN ((((old.a IS DISTINCT FROM new.a) OR (old.b IS DISTINCT FROM new.b)) OR (old.c IS DISTINCT FROM new.c))) " +
+      "EXECUTE FUNCTION public.tf()";
+    const row = {
+      def,
+      when_expr:
+        "((old.a IS DISTINCT FROM new.a) OR (old.b IS DISTINCT FROM new.b) OR (old.c IS DISTINCT FROM new.c))",
+    };
+
+    expect(normalizeTriggerDef(row)).toContain(
+      "WHEN ((old.a IS DISTINCT FROM new.a) OR (old.b IS DISTINCT FROM new.b) OR (old.c IS DISTINCT FROM new.c))",
+    );
+    expect(normalizeTriggerDef(row)).not.toContain(
+      "((old.a IS DISTINCT FROM new.a) OR (old.b IS DISTINCT FROM new.b)) OR (old.c IS DISTINCT FROM new.c)",
+    );
+  });
+
+  test("leaves triggers without a WHEN clause alone", () => {
+    const def = "CREATE TRIGGER t AFTER INSERT ON public.tt EXECUTE FUNCTION public.tf()";
+    expect(normalizeTriggerDef({ def })).toBe(def);
+  });
+});
+
 describe("catalog batch plan", () => {
   const plan = catalogBatchPlan();
   const grouped = plan.groups.flat();

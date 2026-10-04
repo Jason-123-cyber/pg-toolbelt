@@ -651,10 +651,22 @@ export const viewsFamily: CatalogFamily = {
   },
 };
 
+export function normalizeTriggerDef(row: Record<string, unknown>): string {
+  const def = deparsedDef(row, "trigger");
+  const when = row["when_expr"];
+  if (typeof when !== "string" || !/\bWHEN\b/i.test(def)) return def;
+  return def.replace(
+    /(\bWHEN\b\s+)(.*?)(\s+EXECUTE\s+FUNCTION\b.*)/is,
+    (_match, prefix: string, _oldWhen: string, suffix: string) =>
+      `${prefix}${when.trim()}${suffix}`,
+  );
+}
+
 const TRIGGERS_SQL = `
     SELECT n.nspname AS schema, c.relname AS table, t.tgname AS name,
            c.relkind AS table_kind,
            pg_get_triggerdef(t.oid) AS def,
+           pg_get_expr(t.tgqual, t.tgrelid) AS when_expr,
            t.tgenabled AS enabled,
            obj_description(t.oid, 'pg_trigger') AS comment
     FROM pg_trigger t
@@ -692,7 +704,7 @@ export const triggersFamily: CatalogFamily = {
             name: String(row["table"]),
           },
           payload: {
-            def: deparsedDef(row, "trigger"),
+            def: normalizeTriggerDef(row),
             enabled: String(row["enabled"]),
           },
         },
